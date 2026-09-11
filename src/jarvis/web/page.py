@@ -108,6 +108,7 @@ INDEX_HTML = r"""<!doctype html>
       <div class="vhead"><button data-nav="menu">&#8249;</button><span>Settings</span></div>
       <label>Response brain <select id="s-mode"><option value="local">On-device</option><option value="api">API</option></select></label>
       <label id="s-local-row">On-device model <select id="s-local"></select></label>
+      <label>Speech recognition <select id="s-asr"></select></label>
       <label>TTS engine <select id="s-tts-backend"><option value="chatterbox">Chatterbox (natural)</option><option value="kokoro">Kokoro (fast)</option></select></label>
       <label>Voice <select id="s-voice"></select></label>
       <label>Max spoken sentences <input id="s-cap" type="number" min="1" max="10" /></label>
@@ -136,6 +137,9 @@ let streaming=false,partialBubble=null,partialText="";
 let botBubble=null,botText="",userCommitted=false;
 let spoke=false,silenceMs=0,awaitingFinal=false;
 let audioQueue=[],playing=false,currentAudio=null;
+// Client-side end-of-utterance fallback. Kept above the server's own endpointing
+// so a natural pause inside a sentence doesn't split it into several messages.
+let endpointMs=1200;
 
 function state(s){ app.dataset.state=s; statusEl.textContent=LABELS[s]||s; const c=document.getElementById('caption'); if(c) c.textContent=LABELS[s]||s; }
 function view(v){ app.dataset.view=v; pop.hidden=(v==='none'); if(v!=='chat') app.dataset.full='false'; if(v==='input') quicktext.focus(); }
@@ -167,14 +171,19 @@ function onWs(ev){ const d=JSON.parse(ev.data);
   else if(d.type==='tool'){ addTool(d.name); }
   else if(d.type==='audio'){ enqueueAudio(d.audio); }
   else if(d.type==='done'){ if(!botText&&d.text) appendBot(d.text); finishBot(); resetTurn(); if(!playing) state(streaming?'listening':'idle'); }
-  else if(d.type==='speech_started'){ stopAudio(); } }
+  else if(d.type==='speech_started'){ stopAudio(); }
+  else if(d.type==='error'){ notice(d.text||'Voice error'); stopMic(); } }
 
-function startPCM(){ audioCtx=new (window.AudioContext||window.webkitAudioContext)({sampleRate:16000}); micSrc=audioCtx.createMediaStreamSource(micStream);
+function startPCM(){ audioCtx=new (window.AudioContext||window.webkitAudioContext)({sampleRate:16000}); const inRate=audioCtx.sampleRate||16000, ratio=inRate/16000; micSrc=audioCtx.createMediaStreamSource(micStream);
   procNode=audioCtx.createScriptProcessor(2048,1,1); muteGain=audioCtx.createGain(); muteGain.gain.value=0;
-  procNode.onaudioprocess=e=>{ if(!ws||ws.readyState!==1) return; const f=e.inputBuffer.getChannelData(0); const pcm=new Int16Array(f.length); let sum=0;
-    for(let i=0;i<f.length;i++){ const s=Math.max(-1,Math.min(1,f[i])); sum+=s*s; pcm[i]=s<0?s*0x8000:s*0x7FFF; }
-    const rms=Math.sqrt(sum/f.length);
-    if(rms>0.012){ spoke=true; silenceMs=0; awaitingFinal=false; } else if(spoke){ silenceMs+=128; if(silenceMs>450&&!awaitingFinal){ awaitingFinal=true; spoke=false; onFinalize(); } }
+  procNode.onaudioprocess=e=>{ if(!ws||ws.readyState!==1) return; const f=e.inputBuffer.getChannelData(0);
+    // Browsers may ignore the requested 16 kHz rate (notably on Windows); feed the
+    // recognizer exactly 16 kHz or it decodes garbage. Linear resample when needed.
+    const n=Math.max(1,Math.round(f.length/ratio)); const pcm=new Int16Array(n); let sum=0;
+    for(let i=0;i<n;i++){ const pos=i*ratio, i0=Math.floor(pos), a=f[i0]||0, b=f[i0+1]!==undefined?f[i0+1]:a;
+      const s=Math.max(-1,Math.min(1,a+(b-a)*(pos-i0))); sum+=s*s; pcm[i]=s<0?s*0x8000:s*0x7FFF; }
+    const rms=Math.sqrt(sum/n), frameMs=n*1000/16000;
+    if(rms>0.012){ spoke=true; silenceMs=0; awaitingFinal=false; } else if(spoke){ silenceMs+=frameMs; if(silenceMs>endpointMs&&!awaitingFinal){ awaitingFinal=true; spoke=false; onFinalize(); } }
     ws.send(pcm.buffer); };
   micSrc.connect(procNode); procNode.connect(muteGain); muteGain.connect(audioCtx.destination); }
 async function startMic(){ if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){ notice('Microphone needs a secure context (HTTPS). Open '+location.href.replace(/^http:/,'https:')+'.'); return; }
@@ -182,7 +191,7 @@ async function startMic(){ if(!navigator.mediaDevices||!navigator.mediaDevices.g
   try{ micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}}); }
   catch(e){ notice('Microphone unavailable: '+e.message); state('idle'); return; }
   streaming=true; if(app.dataset.view==='none') view('chat');
-  try{ ws=new WebSocket(WS_URL); ws.binaryType='arraybuffer'; ws.onopen=()=>{ state('listening'); startPCM(); }; ws.onmessage=onWs; ws.onerror=()=>{ notice('Voice connection failed — is the streaming service running?'); stopMic(); }; }
+  try{ ws=new WebSocket(WS_URL); ws.binaryType='arraybuffer'; ws.onopen=()=>{ state('listening'); startPCM(); }; ws.onmessage=onWs; ws.onerror=()=>{ notice('Voice connection failed — is the streaming service running?'); stopMic(); }; ws.onclose=()=>{ if(streaming){ notice('Voice connection closed.'); stopMic(); } }; }
   catch(e){ notice('Streaming unavailable: '+e.message); stopMic(); } }
 function stopMic(){ streaming=false; if(ws){ try{ws.send(JSON.stringify({type:'reset'}));ws.close();}catch(e){} ws=null; }
   if(procNode){procNode.disconnect();procNode.onaudioprocess=null;procNode=null;} if(micSrc){micSrc.disconnect();micSrc=null;}
@@ -201,16 +210,18 @@ async function loadSettings(){ const d=await (await fetch('/settings')).json();
   document.getElementById('s-mode').value=d.response_mode;
   const lm=document.getElementById('s-local'); lm.innerHTML=''; (d.local_models||[]).forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m.split('/').pop();if(m===d.local_model)o.selected=true;lm.appendChild(o);});
   document.getElementById('s-local-row').style.display=d.response_mode==='local'?'flex':'none';
+  const asr=document.getElementById('s-asr'); asr.innerHTML=''; (d.asr_backends||[]).forEach(x=>{const o=document.createElement('option');o.value=x.value;o.textContent=x.label+(x.available?'':' — not installed');o.disabled=!x.available;if(x.value===d.asr_backend)o.selected=true;asr.appendChild(o);});
   const v=document.getElementById('s-voice'); v.innerHTML=''; (d.voices||[]).forEach(x=>{const o=document.createElement('option');o.value=x;o.textContent=x;if(x===d.tts_voice)o.selected=true;v.appendChild(o);});
   document.getElementById('s-tts-backend').value=d.tts_backend||'kokoro'; v.disabled=(d.tts_backend==='chatterbox');
   document.getElementById('s-cap').value=d.max_spoken_sentences; }
-async function saveSettings(){ const body={ response_mode:document.getElementById('s-mode').value, local_model:document.getElementById('s-local').value, tts_backend:document.getElementById('s-tts-backend').value, tts_voice:document.getElementById('s-voice').value, max_spoken_sentences:parseInt(document.getElementById('s-cap').value||'3',10) };
+async function saveSettings(){ const body={ response_mode:document.getElementById('s-mode').value, local_model:document.getElementById('s-local').value, asr_backend:document.getElementById('s-asr').value, tts_backend:document.getElementById('s-tts-backend').value, tts_voice:document.getElementById('s-voice').value, max_spoken_sentences:parseInt(document.getElementById('s-cap').value||'3',10) };
   try{ await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); }catch(e){} }
 document.getElementById('s-mode').onchange=()=>{ document.getElementById('s-local-row').style.display=document.getElementById('s-mode').value==='local'?'flex':'none'; };
 document.getElementById('s-tts-backend').onchange=()=>{ document.getElementById('s-voice').disabled=document.getElementById('s-tts-backend').value==='chatterbox'; };
 document.getElementById('s-save').onclick=saveSettings;
 document.getElementById('s-preview').onclick=async()=>{ await saveSettings(); try{ const r=await (await fetch('/speak',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'Hi, this is how I sound.'})})).json(); enqueueAudio(r.audio); }catch(e){} };
 fetch('/health').catch(()=>{});
+fetch('/settings').then(r=>r.json()).then(d=>{ if(d.endpointing_ms) endpointMs=Math.max(1000,parseInt(d.endpointing_ms,10)+200); }).catch(()=>{});
 // Preview hooks (docs/screenshots): ?view=menu|chat|input|settings&state=listening&theme=dark
 const _q=new URLSearchParams(location.search);
 if(_q.get('theme')) document.documentElement.dataset.theme=_q.get('theme');
