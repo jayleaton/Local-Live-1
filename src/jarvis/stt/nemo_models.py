@@ -37,6 +37,15 @@ _LABELS = {
     "parakeet-ctc-1.1b": "Parakeet CTC 1.1B (offline)",
 }
 
+# `model list --json` reports roles/aliases but not artifact sizes; keep the
+# published sizes so the UI can show a download estimate.
+_KNOWN_SIZES = {
+    "nvidia/nemotron-3.5-asr-streaming-0.6b": 741_548_352,
+    "nvidia/nemotron-speech-streaming-en-0.6b": 699_872_960,
+    "nvidia/parakeet-ctc-1.1b": 1_178_100_960,
+    "nvidia/parakeet-tdt-0.6b-v3": 713_975_456,
+}
+
 
 def cache_dir(platform: Optional[str] = None, env: Optional[dict] = None) -> Path:
     """Where ``nemo-speech`` stores downloaded models (see its install docs)."""
@@ -89,15 +98,40 @@ def _iter_index_models(data: dict) -> Iterator[dict]:
             yield value
 
 
-def _entry(model: dict) -> Optional[dict]:
+def _as_list(value) -> list:
+    if isinstance(value, str):
+        return [value]
+    return list(value or [])
+
+
+def _is_asr(model: dict) -> bool:
+    if "asr" in _as_list(model.get("roles")) or "asr" in _as_list(model.get("default_for")):
+        return True
+    # index.json shape (used by tests and any older catalog)
+    return any((a or {}).get("role") == "asr" for a in (model.get("artifacts") or []))
+
+
+def _cached(repo: str, root: Optional[Path] = None) -> bool:
+    """True when the cache holds files for this repo (matched by name token)."""
+    base = cache_dir() if root is None else Path(root)
+    token = repo.split("/")[-1]
+    if not token or not base.exists():
+        return False
+    for path in base.rglob("*"):
+        if token in path.name:
+            return True
+    return False
+
+
+def _entry(model: dict, root: Optional[Path] = None) -> Optional[dict]:
     repo = model.get("repo") or model.get("id") or ""
-    artifacts = [a for a in (model.get("artifacts") or []) if a.get("role") == "asr"]
-    if not repo or not artifacts:
+    if not repo or not _is_asr(model):
         return None
-    art = artifacts[0]
-    filename = art.get("filename") or ""
-    size = int(art.get("size") or 0)
+    artifacts = [a for a in (model.get("artifacts") or []) if a.get("role") == "asr"]
+    filename = (artifacts[0].get("filename") or "") if artifacts else ""
+    size = int(artifacts[0].get("size") or 0) if artifacts else _KNOWN_SIZES.get(repo, 0)
     aliases = [a for a in (model.get("aliases") or []) if isinstance(a, str)]
+    downloaded = is_downloaded(filename, size, root=root) if filename else _cached(repo, root=root)
     return {
         "repo": repo,
         "name": aliases[0] if aliases else repo,
@@ -106,7 +140,7 @@ def _entry(model: dict) -> Optional[dict]:
         "filename": filename,
         "size": size,
         "size_mb": round(size / 1e6, 1) if size else None,
-        "downloaded": is_downloaded(filename, size),
+        "downloaded": downloaded,
         "streaming": repo in STREAMING_ASR_REPOS,
         "license": model.get("license") or "",
     }

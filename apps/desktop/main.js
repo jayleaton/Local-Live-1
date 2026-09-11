@@ -305,13 +305,29 @@ function openSettings() {
   modal.loadURL(dataUrl(html));
 }
 
+// The web UI owns the voice/speech settings (model choice, TTS, brain). Expose
+// them from the app menu so users don't have to find the widget's gear first.
+function openVoiceSettings() {
+  showWindow();
+  if (!win || win.isDestroyed()) return;
+  const go = () =>
+    win.webContents
+      .executeJavaScript(
+        "try{ (window.jarvisOpenSettings||function(){view('settings');loadSettings();})('speech'); }catch(e){}"
+      )
+      .catch(() => {});
+  if (win.webContents.isLoading()) win.webContents.once("did-finish-load", go);
+  else go();
+}
+
 function buildMenu() {
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       {
         label: "Local-Live-1",
         submenu: [
-          { label: "Settings…", click: openSettings },
+          { label: "Voice & speech settings…", click: openVoiceSettings },
+          { label: "Backend settings…", click: openSettings },
           { label: "Reload", click: () => win && win.reload() },
           { label: "Open backend log", click: () => shell.openPath(backendLogPath()) },
           { type: "separator" },
@@ -330,7 +346,8 @@ function createTray() {
     tray.setContextMenu(
       Menu.buildFromTemplate([
         { label: "Show Local-Live-1", click: showWindow },
-        { label: "Settings…", click: openSettings },
+        { label: "Voice & speech settings…", click: openVoiceSettings },
+        { label: "Backend settings…", click: openSettings },
         { label: "Reload", click: () => win && win.reload() },
         { type: "separator" },
         { label: "Quit", click: () => { quitting = true; app.quit(); } },

@@ -82,6 +82,12 @@ INDEX_HTML = r"""<!doctype html>
         border-radius:8px; padding:7px 9px; }
   .btnrow{ display:flex; gap:8px; }
   .btnrow button{ flex:1; border:1px solid var(--line); background:transparent; color:var(--fg); border-radius:9px; padding:8px; cursor:pointer; }
+  .tabs{ display:flex; gap:2px; border-bottom:1px solid var(--line); margin:0 0 8px; }
+  .tabs .tab{ flex:1; border:0; background:transparent; color:var(--muted); cursor:pointer; font-size:13px;
+        padding:8px 4px; border-bottom:2px solid transparent; margin-bottom:-1px; }
+  .tabs .tab[aria-selected="true"]{ color:var(--fg); border-bottom-color:var(--accent); }
+  .tabpane{ display:none; flex-direction:column; gap:9px; min-height:196px; }
+  .tabpane.active{ display:flex; }
 </style>
 </head>
 <body>
@@ -106,18 +112,31 @@ INDEX_HTML = r"""<!doctype html>
 
     <section class="view view-settings">
       <div class="vhead"><button data-nav="menu">&#8249;</button><span>Settings</span></div>
-      <label>Response brain <select id="s-mode"><option value="local">On-device</option><option value="api">API</option></select></label>
-      <label id="s-local-row">On-device model <select id="s-local"></select></label>
-      <label>Speech recognition <select id="s-asr"></select></label>
-      <div id="asr-info" style="font-size:11px;color:var(--muted);margin:-4px 0 2px"></div>
-      <div class="btnrow" id="asr-actions" style="display:none">
-        <button id="s-asr-install" style="display:none">Install NVIDIA runtime</button>
-        <button id="s-asr-download" style="display:none">Download model</button>
+      <div class="tabs" id="settings-tabs">
+        <button class="tab" type="button" data-tab="brain" aria-selected="true">Brain</button>
+        <button class="tab" type="button" data-tab="speech" aria-selected="false">Speech</button>
+        <button class="tab" type="button" data-tab="voice" aria-selected="false">Voice</button>
       </div>
-      <div id="asr-progress" style="font-size:11px;color:var(--muted)"></div>
-      <label>TTS engine <select id="s-tts-backend"><option value="chatterbox">Chatterbox (natural)</option><option value="kokoro">Kokoro (fast)</option></select></label>
-      <label>Voice <select id="s-voice"></select></label>
-      <label>Max spoken sentences <input id="s-cap" type="number" min="1" max="10" /></label>
+      <div class="tabbody">
+        <div class="tabpane active" data-pane="brain">
+          <label>Response brain <select id="s-mode"><option value="local">On-device</option><option value="api">API</option></select></label>
+          <label id="s-local-row">On-device model <select id="s-local"></select></label>
+        </div>
+        <div class="tabpane" data-pane="speech">
+          <label>Speech recognition <select id="s-asr"></select></label>
+          <div id="asr-info" style="font-size:11px;color:var(--muted)"></div>
+          <div class="btnrow" id="asr-actions" style="display:none">
+            <button id="s-asr-install" style="display:none">Install NVIDIA runtime</button>
+            <button id="s-asr-download" style="display:none">Download model</button>
+          </div>
+          <div id="asr-progress" style="font-size:11px;color:var(--muted)"></div>
+        </div>
+        <div class="tabpane" data-pane="voice">
+          <label>TTS engine <select id="s-tts-backend"><option value="chatterbox">Chatterbox (natural)</option><option value="kokoro">Kokoro (fast)</option></select></label>
+          <label>Voice <select id="s-voice"></select></label>
+          <label>Max spoken sentences <input id="s-cap" type="number" min="1" max="10" /></label>
+        </div>
+      </div>
       <div class="btnrow"><button id="s-save">Save</button><button id="s-preview">Preview</button></div>
     </section>
   </div>
@@ -213,6 +232,10 @@ quickform.onsubmit=e=>{ e.preventDefault(); const t=quicktext.value; quicktext.v
 document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ app.dataset.view==='chat' ? view('menu') : view('none'); } });
 document.addEventListener('click',e=>{ const v=app.dataset.view; if((v==='menu'||v==='input'||v==='settings') && !app.contains(e.target)) view('none'); });
 
+let settingsTab='brain';
+function showTab(name){ settingsTab=name||settingsTab; document.querySelectorAll('#settings-tabs .tab').forEach(b=>b.setAttribute('aria-selected', b.dataset.tab===settingsTab?'true':'false')); document.querySelectorAll('.tabpane').forEach(p=>p.classList.toggle('active', p.dataset.pane===settingsTab)); }
+document.querySelectorAll('#settings-tabs .tab').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
+window.jarvisOpenSettings=function(tab){ view('settings'); loadSettings(); if(tab) showTab(tab); };
 async function loadSettings(){ const d=await (await fetch('/settings')).json();
   document.getElementById('s-mode').value=d.response_mode;
   const lm=document.getElementById('s-local'); lm.innerHTML=''; (d.local_models||[]).forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m.split('/').pop();if(m===d.local_model)o.selected=true;lm.appendChild(o);});

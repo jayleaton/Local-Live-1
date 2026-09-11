@@ -40,6 +40,24 @@ def test_entry_extracts_asr_metadata(monkeypatch):
     assert entry["size_mb"] and entry["size_mb"] > 700
 
 
+def test_entry_handles_cli_roles_shape(monkeypatch):
+    # `nemo-speech --json model list` reports roles/aliases, not artifacts/size.
+    monkeypatch.setattr(nm, "_cached", lambda *a, **k: False)
+    entry = nm._entry(
+        {
+            "repo": "nvidia/nemotron-3.5-asr-streaming-0.6b",
+            "aliases": ["nemotron-3.5", "nemotron-asr"],
+            "roles": ["asr"],
+            "license": "OpenMDW",
+        }
+    )
+    assert entry["name"] == "nemotron-3.5"
+    assert entry["streaming"] is True
+    assert entry["size_mb"] and entry["size_mb"] > 700
+    assert entry["downloaded"] is False
+    assert nm._entry({"repo": "nvidia/magpie", "roles": ["tts"]}) is None
+
+
 def test_entry_marks_parakeet_offline(monkeypatch):
     monkeypatch.setattr(nm, "is_downloaded", lambda *a, **k: False)
     entry = nm._entry(
