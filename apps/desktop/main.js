@@ -80,29 +80,37 @@ function refreshBackendUrl() {
 }
 const backendDir = () => (app.isPackaged ? path.join(process.resourcesPath, "backend") : REPO_ROOT);
 
+function readJson(p) {
+  try {
+    return JSON.parse(fs.readFileSync(p, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 function writeBackendConfig() {
   const bd = backendDir();
-  let base = {};
-  try {
-    base = JSON.parse(fs.readFileSync(path.join(bd, "jarvis.config.example.json"), "utf8"));
-  } catch {
-    base = {};
-  }
-  base.response_mode = cfg.brain;
-  base.voice = base.voice || {};
-  // Nemotron/Chatterbox sidecars are macOS-oriented; the bundled Windows/Linux
-  // runtime falls back to sherpa ASR + Kokoro TTS.
-  base.voice.streaming_backend = isMac ? "nemotron" : "sherpa";
-  base.voice.tts_backend = isMac ? "chatterbox" : "kokoro";
-  base.model = base.model || {};
-  if (cfg.baseUrl) base.model.base_url = cfg.baseUrl; // e.g. http://127.0.0.1:8080/v1 (llama.cpp/vLLM)
-  if (cfg.model) base.model.model = cfg.model;
+  const example = readJson(path.join(bd, "jarvis.config.example.json")) || {};
+  // Preserve choices made in the app/web UI (speech + brain model, voice, keys)
+  // instead of resetting them from the example on every launch.
+  const saved = readJson(backendConfigPath()) || {};
+  const out = { ...example, ...saved };
+  out.voice = { ...(example.voice || {}), ...(saved.voice || {}) };
+  out.model = { ...(example.model || {}), ...(saved.model || {}) };
+  out.local = { ...(example.local || {}), ...(saved.local || {}) };
+  out.agents = saved.agents || example.agents;
+  out.response_mode = cfg.brain;
+  // Platform defaults only when the user hasn't chosen one yet.
+  if (!out.voice.streaming_backend) out.voice.streaming_backend = isMac ? "nemotron" : "sherpa";
+  if (!out.voice.tts_backend) out.voice.tts_backend = isMac ? "chatterbox" : "kokoro";
+  if (cfg.baseUrl) out.model.base_url = cfg.baseUrl; // e.g. http://127.0.0.1:8080/v1 (llama.cpp/vLLM)
+  if (cfg.model) out.model.model = cfg.model;
   if (cfg.apiKey) {
-    base.model.api_key = cfg.apiKey;
-    if (base.agents && base.agents.worker) base.agents.worker.api_key = cfg.apiKey;
+    out.model.api_key = cfg.apiKey;
+    if (out.agents && out.agents.worker) out.agents.worker.api_key = cfg.apiKey;
   }
   try {
-    fs.writeFileSync(backendConfigPath(), JSON.stringify(base, null, 2));
+    fs.writeFileSync(backendConfigPath(), JSON.stringify(out, null, 2));
   } catch {}
 }
 

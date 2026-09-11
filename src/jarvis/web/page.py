@@ -184,7 +184,7 @@ let audioQueue=[],playing=false,currentAudio=null;
 // Client-side end-of-utterance fallback. Kept above the server's own endpointing
 // so a natural pause inside a sentence doesn't split it into several messages.
 let endpointMs=1200;
-let asrCatalog=null, asrPoll=null, brainCatalog=null;
+let asrCatalog=null, asrPoll=null, brainCatalog=null, localAvailable=false;
 let micDeviceId=''; try{ micDeviceId=localStorage.getItem('jarvis.micDeviceId')||''; }catch(e){}
 
 function state(s){ app.dataset.state=s; statusEl.textContent=LABELS[s]||s; const c=document.getElementById('caption'); if(c) c.textContent=LABELS[s]||s; }
@@ -269,8 +269,11 @@ window.jarvisOpenSettings=function(tab){ view('settings'); loadSettings(); if(ta
 window.jarvisToggleMic=function(){ streaming?stopMic():startMic(); };
 window.jarvisCancel=function(){ if(streaming) stopMic(); };
 async function loadSettings(){ const d=await (await fetch('/settings')).json();
-  document.getElementById('s-mode').value=d.response_mode;
-  document.getElementById('s-local-row').style.display=d.response_mode==='local'?'block':'none';
+  localAvailable=!!d.local_available;
+  const localOpt=document.querySelector('#s-mode option[value="local"]');
+  if(localOpt) localOpt.disabled=!localAvailable;
+  document.getElementById('s-mode').value=(!localAvailable?'api':d.response_mode);
+  document.getElementById('s-local-row').style.display=(d.response_mode==='local'&&localAvailable)?'block':'none';
   const v=document.getElementById('s-voice'); v.innerHTML=''; (d.voices||[]).forEach(x=>{const o=document.createElement('option');o.value=x;o.textContent=x;if(x===d.tts_voice)o.selected=true;v.appendChild(o);});
   document.getElementById('s-tts-backend').value=d.tts_backend||'kokoro'; v.disabled=(d.tts_backend==='chatterbox');
   document.getElementById('s-cap').value=d.max_spoken_sentences; loadAsr(); loadBrain(); }
@@ -333,7 +336,9 @@ document.getElementById('s-asr-install').onclick=()=>runAsrJob('/asr/install',{}
 document.getElementById('s-asr-download').onclick=()=>{ const d=asrCatalog||{}, sel=document.getElementById('s-asr').value; if(sel.indexOf('nemo:')===0){ const m=(d.models||[]).find(x=>'nemo:'+x.name===sel)||{}; runAsrJob('/asr/pull',{name:sel.slice(5),repo:m.repo,size:m.size,label:m.label}); } };
 async function loadBrain(){ try{ brainCatalog=await (await fetch('/brain/models')).json(); }catch(e){ return; }
   const d=brainCatalog, sel=document.getElementById('s-local');
-  sel.innerHTML=''; (d.models||[]).forEach(m=>{ const o=document.createElement('option'); o.value=m.repo; o.textContent=m.label+(m.size_mb?' — '+m.size_mb+' MB':'')+(m.downloaded?' (installed)':''); if(m.repo===d.active) o.selected=true; sel.appendChild(o); });
+  sel.innerHTML='';
+  if(d.available===false){ document.getElementById('brain-info').textContent=d.reason||'On-device models are not available on this platform.'; document.getElementById('brain-actions').style.display='none'; document.getElementById('brain-progress-wrap').style.display='none'; return; }
+  (d.models||[]).forEach(m=>{ const o=document.createElement('option'); o.value=m.repo; o.textContent=m.label+(m.size_mb?' — '+m.size_mb+' MB':'')+(m.downloaded?' (installed)':''); if(m.repo===d.active) o.selected=true; sel.appendChild(o); });
   updateBrainActions(); }
 function updateBrainActions(){ const d=brainCatalog||{}, sel=(document.getElementById('s-local')||{}).value||'', m=(d.models||[]).find(x=>x.repo===sel);
   const dl=document.getElementById('s-brain-download'), actions=document.getElementById('brain-actions'), info=document.getElementById('brain-info');
@@ -366,7 +371,7 @@ document.getElementById('s-local').onchange=()=>{ updateBrainActions(); saveSett
   const d=brainCatalog||{}, m=(d.models||[]).find(x=>x.repo===document.getElementById('s-local').value);
   if(m&&!m.downloaded&&!asrBusy) runBrainJob({repo:m.repo,size:m.size,label:m.label}); };
 document.getElementById('s-brain-download').onclick=()=>{ const d=brainCatalog||{}, m=(d.models||[]).find(x=>x.repo===document.getElementById('s-local').value)||{}; runBrainJob({repo:m.repo,size:m.size,label:m.label}); };
-document.getElementById('s-mode').onchange=()=>{ document.getElementById('s-local-row').style.display=document.getElementById('s-mode').value==='local'?'block':'none'; };
+document.getElementById('s-mode').onchange=()=>{ document.getElementById('s-local-row').style.display=(document.getElementById('s-mode').value==='local'&&localAvailable)?'block':'none'; };
 document.getElementById('s-tts-backend').onchange=()=>{ document.getElementById('s-voice').disabled=document.getElementById('s-tts-backend').value==='chatterbox'; };
 document.getElementById('s-save').onclick=saveSettings;
 document.getElementById('s-preview').onclick=async()=>{ await saveSettings(); try{ const r=await (await fetch('/speak',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'Hi, this is how I sound.'})})).json(); enqueueAudio(r.audio); }catch(e){} };

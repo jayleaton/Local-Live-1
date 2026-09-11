@@ -132,11 +132,15 @@ class JarvisConfig:
     dispatch: DispatchSettings = field(default_factory=DispatchSettings)
     agents: dict[str, AgentConfig] = field(default_factory=dict)
     servers: dict[str, ServerConfig] = field(default_factory=dict)
+    # Where this config was loaded from, so runtime changes persist back there.
+    source_path: Optional[str] = None
 
     @staticmethod
     def load(path: str | Path) -> "JarvisConfig":
         data = json.loads(Path(path).read_text())
-        return JarvisConfig.from_dict(data)
+        cfg = JarvisConfig.from_dict(data)
+        cfg.source_path = str(path)
+        return cfg
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> "JarvisConfig":

@@ -262,10 +262,19 @@ class JarvisService:
             "endpointing_ms": self.cfg.voice.endpointing_ms,
             "asr_backend": self.cfg.voice.streaming_backend,
             "asr_backends": self._asr_backends(),
+            "local_available": self._local_available(),
             "brain": self.harness.provider.name,
             "tools": sorted(t.name for t in self.harness.runtime.tools()),
             "servers": sorted(c.name for c in self.cfg.servers.values() if c.enabled),
         }
+
+    @staticmethod
+    def _local_available() -> bool:
+        """On-device brain uses MLX, which only runs on Apple Silicon."""
+        import platform
+        import sys
+
+        return sys.platform == "darwin" and platform.machine() in ("arm64", "aarch64")
 
     @staticmethod
     def _asr_backends() -> list[dict]:
@@ -298,14 +307,16 @@ class JarvisService:
 
     def brain_models(self) -> dict:
         """Catalog of on-device (MLX) brain models plus the active one."""
+        active = self.cfg.local.model if self.cfg.local else None
+        if not self._local_available():
+            return {"models": [], "available": False, "active": active, "reason": "MLX on-device models require Apple Silicon"}
         try:
             from jarvis.llm import local_models
 
             models = local_models.list_models()
         except Exception as e:  # noqa: BLE001
-            models = []
-            return {"models": models, "error": f"{type(e).__name__}: {e}", "active": self.cfg.local.model if self.cfg.local else None}
-        return {"models": models, "active": self.cfg.local.model if self.cfg.local else None}
+            return {"models": [], "available": True, "error": f"{type(e).__name__}: {e}", "active": active}
+        return {"models": models, "available": True, "active": active}
 
     def asr_status(self) -> dict:
         with self._asr_lock:
@@ -407,11 +418,30 @@ class JarvisService:
                 local_models.pull(name, progress)
             else:
                 nemo_models.install_runtime(progress)
+            if kind == "brain" and self.cfg.local is not None:
+                # Make the freshly downloaded model the active one and load it.
+                self.cfg.local.model = name
+                if self.cfg.response_mode == "local":
+                    self.harness.provider = self._make_provider()
+                    self._load_provider_async()
             with self._asr_lock:
                 self._asr_job.update(running=False, done=True, percent=100, message="done")
         except Exception as e:  # noqa: BLE001 - surfaced to the UI
             with self._asr_lock:
                 self._asr_job.update(running=False, done=True, error=f"{type(e).__name__}: {e}", message="failed")
+
+    def _load_provider_async(self) -> None:
+        """Load the active brain in the background (MLX loads are heavy)."""
+
+        def run() -> None:
+            try:
+                provider = self.harness.provider
+                if hasattr(provider, "_load"):
+                    provider._load()
+            except Exception:  # noqa: BLE001 - surfaced on first turn instead
+                pass
+
+        threading.Thread(target=run, daemon=True).start()
 
     def apply_settings(self, data: dict) -> dict:
         if data.get("response_mode") in ("local", "api"):
@@ -435,16 +465,22 @@ class JarvisService:
             self.cfg.voice.max_spoken_sentences = max(1, int(data["max_spoken_sentences"]))
         if data.get("endpointing_ms") is not None:
             self.cfg.voice.endpointing_ms = max(100, int(data["endpointing_ms"]))
-        # Swap the response provider live.
+        # Swap the response provider live, and warm a local brain in the background.
         self.harness.provider = self._make_provider()
+        local = self.cfg.response_mode != "api" and self.cfg.local is not None
         self._persist()
+        if local:
+            self._load_provider_async()
         return self.get_settings()
 
     def _persist(self) -> None:
         import json
+        import os
         from pathlib import Path
 
-        path = Path("jarvis.config.json")
+        # Write back to the file this config was loaded from (the desktop passes
+        # it via JARVIS_CONFIG); never to an unrelated cwd file.
+        path = Path(getattr(self.cfg, "source_path", None) or os.environ.get("JARVIS_CONFIG") or "jarvis.config.json")
         try:
             data = json.loads(path.read_text())
         except Exception:
