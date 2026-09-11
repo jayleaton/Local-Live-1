@@ -261,7 +261,8 @@ class JarvisService:
             return None
         llama_runtime.stop(self._llama_proc)
         port = self._free_port()
-        self._llama_proc = llama_runtime.start(path, port)
+        template = local_models.chat_template_path(repo)
+        self._llama_proc = llama_runtime.start(path, port, chat_template_file=template)
         return OpenAICompatProvider(
             f"http://127.0.0.1:{port}/v1",
             "local",

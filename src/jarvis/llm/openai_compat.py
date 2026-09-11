@@ -333,10 +333,15 @@ class OpenAICompatProvider(LLMProvider):
         if not choices:
             raise RuntimeError(f"LLM returned no choices: {json.dumps(result)[:500]}")
         message = choices[0].get("message", {}) or {}
-        text = _strip_think(message.get("content") or "")
+        raw = message.get("content") or ""
         calls = parse_tool_calls(message.get("tool_calls") or [], name_decoder=decoder)
-        if not calls:
-            text, calls = parse_text_tool_calls(text, name_decoder=decoder)
+        if calls:
+            text = _strip_think(raw)
+        else:
+            # Extract tool markup before stripping reasoning so a call that
+            # follows or interrupts the think block is not lost.
+            text, calls = parse_text_tool_calls(raw, name_decoder=decoder)
+            text = _strip_think(text)
         return LLMResponse(
             text=text,
             tool_calls=calls,
@@ -443,9 +448,11 @@ class OpenAICompatProvider(LLMProvider):
 
     def parse_output(self, raw: str, tools: list[ToolSpec]) -> LLMResponse:
         calls = list(self._last_tool_calls)
-        text = _strip_think(raw)
-        if not calls:
-            text, calls = parse_text_tool_calls(text)
+        if calls:
+            text = _strip_think(raw)
+        else:
+            text, calls = parse_text_tool_calls(raw)
+            text = _strip_think(text)
         return LLMResponse(
             text=text.strip(),
             tool_calls=calls,

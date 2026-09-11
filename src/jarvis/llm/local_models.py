@@ -28,6 +28,9 @@ GGUF_CATALOG = [
         "file": "qwen3.5-14b-a3b-claude-4.6-opus-reasoning-distilled-reap-q4_k_m.gguf",
         "label": "Qwen3.5 14B-A3B (smarter)",
         "runtime": "llama.cpp",
+        # This community GGUF embeds a minimal chat template with no tool support,
+        # so we supply the base model's proper tool-aware template.
+        "chat_template_url": "https://huggingface.co/tvall43/Qwen3.5-14B-A3B-Claude-4.6-Opus-Reasoning-Distilled-reap/raw/main/chat_template.jinja",
     },
 ]
 
@@ -145,6 +148,33 @@ def pull(repo: str, filename: str = "", on_progress: Optional[Callable[[str], No
         snapshot_download(repo_id=repo, token=token)
     if on_progress:
         on_progress("done")
+
+
+def chat_template_path(repo: str) -> Optional[str]:
+    """Local path to a tool-aware chat template when the GGUF lacks one.
+
+    Some community GGUFs embed a stripped chat template with no tool support, so
+    the model never sees the tools. We fetch the base model's template once and
+    pass it to llama-server.
+    """
+    item = _find(repo)
+    url = item.get("chat_template_url") if item else None
+    if not url:
+        return None
+    cache = Path.home() / ".cache" / "jarvis" / "llama.cpp" / "templates"
+    dest = cache / (repo.replace("/", "__") + ".jinja")
+    if dest.exists() and dest.stat().st_size > 0:
+        return str(dest)
+    try:
+        import urllib.request
+
+        cache.mkdir(parents=True, exist_ok=True)
+        req = urllib.request.Request(url, headers={"User-Agent": "jarvis/0.0.1"})
+        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+            dest.write_bytes(resp.read())
+        return str(dest)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def model_path(repo: str, filename: str = "") -> Optional[str]:

@@ -237,7 +237,15 @@ def stop_all() -> None:
     _kill_orphans()
 
 
-def start(model_path: str, port: int, *, ctx: int = 8192, n_gpu_layers: int = 999, wait: float = 240.0) -> subprocess.Popen:
+def start(
+    model_path: str,
+    port: int,
+    *,
+    ctx: int = 8192,
+    n_gpu_layers: int = 999,
+    wait: float = 240.0,
+    chat_template_file: Optional[str] = None,
+) -> subprocess.Popen:
     stop_all()  # never run two models at once
     server = find_server()
     if not server:
@@ -248,10 +256,13 @@ def start(model_path: str, port: int, *, ctx: int = 8192, n_gpu_layers: int = 99
         "-ngl", str(n_gpu_layers),
         "-c", str(ctx),
         "-fa", "on",  # flash attention: faster and smaller KV cache
-        "--reasoning", "off",  # no thinking tokens (speed + no leaked reasoning)
-        "--host", "127.0.0.1",
-        "--port", str(port),
     ]
+    if chat_template_file:
+        # Supply a tool-aware template and cap thinking so it stays responsive.
+        cmd += ["--chat-template-file", chat_template_file, "--reasoning-budget", "256"]
+    else:
+        cmd += ["--reasoning", "off"]  # no thinking tokens (speed + no leaked reasoning)
+    cmd += ["--host", "127.0.0.1", "--port", str(port)]
     log = CACHE / "llama-server.log"
     try:
         CACHE.mkdir(parents=True, exist_ok=True)
