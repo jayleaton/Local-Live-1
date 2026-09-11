@@ -1,6 +1,6 @@
 {
   "name": "@jarvis/desktop",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "Local-Live-1 desktop app (Electron): all-in-one client + local backend manager",
   "author": "Local-Live-1 contributors",
