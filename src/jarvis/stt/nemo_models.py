@@ -111,28 +111,58 @@ def _is_asr(model: dict) -> bool:
     return any((a or {}).get("role") == "asr" for a in (model.get("artifacts") or []))
 
 
-def _cached(repo: str, root: Optional[Path] = None) -> bool:
-    """True when the cache holds files for this repo (matched by name token)."""
+def _matches(rel: str, repo: str) -> bool:
+    """Match a cache-relative path against a repo, any revision.
+
+    The cache layout is ``<owner>/<name>/<revision>/<file>``; matching the
+    owner/name path means any already-installed revision counts as installed,
+    so the UI never offers a second copy of the same model.
+    """
+    rel = rel.replace("\\", "/")
+    if repo and "/" in repo:
+        return repo in rel
+    name = repo.split("/")[-1]
+    return bool(name) and name in rel
+
+
+def is_installed(repo: str, size: int = 0, root: Optional[Path] = None) -> bool:
+    """True only when a complete copy exists (any revision).
+
+    A partial download also leaves files, so when the published size is known we
+    require the on-disk bytes to reach it; that keeps "installed" honest and
+    still lets `pull` resume an interrupted download.
+    """
     base = cache_dir() if root is None else Path(root)
-    token = repo.split("/")[-1]
-    if not token or not base.exists():
+    if not repo or not base.exists():
         return False
+    total = 0
     for path in base.rglob("*"):
-        if token in path.name:
-            return True
-    return False
+        try:
+            if path.is_file() and _matches(str(path.relative_to(base)), repo):
+                total += path.stat().st_size
+        except OSError:  # pragma: no cover
+            continue
+    if total == 0:
+        return False
+    expected = size or _KNOWN_SIZES.get(repo, 0)
+    if expected:
+        return total >= int(expected * 0.99)
+    return True
+
+
+def _cached(repo: str, root: Optional[Path] = None) -> bool:
+    return is_installed(repo, root=root)
 
 
 def cached_bytes(repo: str, root: Optional[Path] = None) -> int:
     """Bytes of this repo already present in the cache (for a progress bar)."""
     base = cache_dir() if root is None else Path(root)
-    token = repo.split("/")[-1]
-    if not token or not base.exists():
+    if not repo or not base.exists():
         return 0
     total = 0
     for path in base.rglob("*"):
         try:
-            if path.is_file() and token in str(path.relative_to(base)):
+            if path.is_file() and _matches(str(path.relative_to(base)), repo):
                 total += path.stat().st_size
         except OSError:  # pragma: no cover
             continue
@@ -147,7 +177,7 @@ def _entry(model: dict, root: Optional[Path] = None) -> Optional[dict]:
     filename = (artifacts[0].get("filename") or "") if artifacts else ""
     size = int(artifacts[0].get("size") or 0) if artifacts else _KNOWN_SIZES.get(repo, 0)
     aliases = [a for a in (model.get("aliases") or []) if isinstance(a, str)]
-    downloaded = is_downloaded(filename, size, root=root) if filename else _cached(repo, root=root)
+    downloaded = is_downloaded(filename, size, root=root) if filename else is_installed(repo, size, root=root)
     return {
         "repo": repo,
         "name": aliases[0] if aliases else repo,
@@ -157,6 +187,7 @@ def _entry(model: dict, root: Optional[Path] = None) -> Optional[dict]:
         "size": size,
         "size_mb": round(size / 1e6, 1) if size else None,
         "downloaded": downloaded,
+        "installed": downloaded,
         "streaming": repo in STREAMING_ASR_REPOS,
         "license": model.get("license") or "",
     }

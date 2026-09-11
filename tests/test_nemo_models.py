@@ -40,9 +40,20 @@ def test_entry_extracts_asr_metadata(monkeypatch):
     assert entry["size_mb"] and entry["size_mb"] > 700
 
 
+def test_is_installed_requires_expected_size(tmp_path: Path):
+    repo = "nvidia/nemotron-3.5-asr-streaming-0.6b"
+    rev = tmp_path / "nvidia" / "nemotron-3.5-asr-streaming-0.6b" / "rev1"
+    rev.mkdir(parents=True)
+    (rev / "model.gguf").write_bytes(b"x" * 100)
+    assert nm.is_installed(repo, 100, root=tmp_path) is True
+    assert nm.is_installed(repo, 1000, root=tmp_path) is False  # partial download
+    assert nm.is_installed("nvidia/nemotron-speech-streaming-en-0.6b", 1, root=tmp_path) is False
+    assert nm.cached_bytes(repo, root=tmp_path) == 100
+
+
 def test_entry_handles_cli_roles_shape(monkeypatch):
     # `nemo-speech --json model list` reports roles/aliases, not artifacts/size.
-    monkeypatch.setattr(nm, "_cached", lambda *a, **k: False)
+    monkeypatch.setattr(nm, "is_installed", lambda *a, **k: False)
     entry = nm._entry(
         {
             "repo": "nvidia/nemotron-3.5-asr-streaming-0.6b",
