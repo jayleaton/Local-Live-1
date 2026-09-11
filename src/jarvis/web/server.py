@@ -296,18 +296,65 @@ class JarvisService:
         }
         return info
 
+    def brain_models(self) -> dict:
+        """Catalog of on-device (MLX) brain models plus the active one."""
+        try:
+            from jarvis.llm import local_models
+
+            models = local_models.list_models()
+        except Exception as e:  # noqa: BLE001
+            models = []
+            return {"models": models, "error": f"{type(e).__name__}: {e}", "active": self.cfg.local.model if self.cfg.local else None}
+        return {"models": models, "active": self.cfg.local.model if self.cfg.local else None}
+
     def asr_status(self) -> dict:
         with self._asr_lock:
             job = dict(self._asr_job)
-        if job.get("running") and job.get("kind") == "pull" and job.get("repo"):
+        if job.get("running") and job.get("kind") in ("pull", "brain") and job.get("repo"):
             try:
-                from jarvis.stt import nemo_models
+                if job["kind"] == "pull":
+                    from jarvis.stt import nemo_models
 
-                job["bytes_done"] = nemo_models.cached_bytes(job["repo"])
+                    done = nemo_models.cached_bytes(job["repo"])
+                else:
+                    from jarvis.llm import local_models
+
+                    done = local_models.cached_bytes(job["repo"])
+                job["bytes_done"] = done
                 job["bytes_total"] = job.get("size") or 0
             except Exception:  # noqa: BLE001 - progress is best-effort
                 pass
         return job
+
+    def start_brain_job(self, repo: str, *, size: int = 0, label: str = "") -> dict:
+        if not repo:
+            return {"started": False, "error": "missing model repo"}
+        try:
+            from jarvis.llm import local_models
+
+            if local_models.is_downloaded(repo, size):
+                return {"started": False, "installed": True, "name": repo}
+        except Exception:  # noqa: BLE001
+            pass
+        with self._asr_lock:
+            if self._asr_job.get("running"):
+                return {"started": False, "error": "a model job is already running"}
+            self._asr_job = {
+                "running": True,
+                "kind": "brain",
+                "name": repo,
+                "repo": repo,
+                "size": size,
+                "label": label,
+                "bytes_done": 0,
+                "bytes_total": size,
+                "message": "starting…",
+                "percent": None,
+                "done": False,
+                "error": None,
+            }
+        threading.Thread(target=self._run_asr_job, args=("brain", repo), daemon=True).start()
+        return {"started": True, "kind": "brain", "name": repo}
 
     def start_asr_job(self, kind: str, name: str = "", *, repo: str = "", size: int = 0, label: str = "") -> dict:
         if kind not in ("install", "pull"):
@@ -354,6 +401,10 @@ class JarvisService:
         try:
             if kind == "pull":
                 nemo_models.pull(name, progress)
+            elif kind == "brain":
+                from jarvis.llm import local_models
+
+                local_models.pull(name, progress)
             else:
                 nemo_models.install_runtime(progress)
             with self._asr_lock:
@@ -688,6 +739,10 @@ def _handler_for(service: JarvisService, index_html: str):
                 self._json(200, service.asr_models())
             elif path == "/asr/status":
                 self._json(200, service.asr_status())
+            elif path == "/brain/models":
+                self._json(200, service.brain_models())
+            elif path == "/brain/status":
+                self._json(200, service.asr_status())
             else:
                 self._send(404, b"not found", "text/plain")
 
@@ -711,6 +766,17 @@ def _handler_for(service: JarvisService, index_html: str):
                 elif path == "/settings":
                     payload = json.loads(data.decode("utf-8") or "{}")
                     self._json(200, service.apply_settings(payload))
+                elif path == "/brain/pull":
+                    payload = json.loads(data.decode("utf-8") or "{}")
+                    repo = (payload.get("repo") or payload.get("name") or "").strip()
+                    self._json(
+                        200,
+                        service.start_brain_job(
+                            repo,
+                            size=int(payload.get("size") or 0),
+                            label=payload.get("label") or "",
+                        ),
+                    )
                 elif path == "/asr/install":
                     self._json(200, service.start_asr_job("install"))
                 elif path == "/asr/pull":
