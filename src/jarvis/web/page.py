@@ -38,14 +38,17 @@ INDEX_HTML = r"""<!doctype html>
   @keyframes breathe{ 50%{ opacity:.35; } }
 
   .pop{ position:absolute; bottom:96px; left:50%; transform:translateX(-50%);
+        display:flex; flex-direction:column; max-height:min(82vh,760px);
         background:var(--card); border:1px solid var(--line); border-radius:16px; padding:14px;
-        width:300px; max-width:calc(100vw - 32px); }
+        width:320px; max-width:calc(100vw - 32px); }
+  #app[data-view="chat"] .pop{ height:min(72vh,640px); }
+  #app[data-full="true"] .pop{ width:min(780px,94vw); height:min(88vh,860px); }
   .pop[hidden]{ display:none; }
   .pop::after{ content:""; position:absolute; bottom:-7px; left:50%; transform:translateX(-50%) rotate(45deg);
         width:12px; height:12px; background:var(--card); border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
   .view{ display:none; }
   #app[data-view="menu"] .view-menu{ display:flex; flex-direction:column; gap:4px; }
-  #app[data-view="chat"] .view-chat{ display:flex; flex-direction:column; }
+  #app[data-view="chat"] .view-chat{ display:flex; flex-direction:column; flex:1; min-height:0; }
   #app[data-view="input"] .view-input{ display:block; }
   #app[data-view="settings"] .view-settings{ display:flex; flex-direction:column; gap:9px; }
 
@@ -57,7 +60,7 @@ INDEX_HTML = r"""<!doctype html>
   .vhead{ display:flex; align-items:center; gap:8px; margin-bottom:8px; font-weight:600; font-size:14px; }
   .vhead button{ border:0; background:transparent; color:var(--muted); cursor:pointer; font-size:18px; padding:0 4px; }
 
-  .log{ display:flex; flex-direction:column; gap:8px; max-height:44vh; overflow-y:auto; padding:2px; }
+  .log{ display:flex; flex-direction:column; gap:8px; flex:1; min-height:0; overflow-y:auto; padding:2px; }
   .log:empty::before{ content:"Say hello."; color:var(--muted); font-size:13px; }
   .msg{ max-width:88%; padding:8px 11px; border-radius:12px; white-space:pre-wrap; word-break:break-word; font-size:14px; }
   .user{ align-self:flex-end; background:var(--user); color:#fff; }
@@ -92,7 +95,7 @@ INDEX_HTML = r"""<!doctype html>
     </nav>
 
     <section class="view view-chat">
-      <div class="vhead"><button data-nav="menu">&#8249;</button><span>Chat</span></div>
+      <div class="vhead"><button data-nav="menu">&#8249;</button><span>Chat</span><button id="btn-full" title="Full screen" style="margin-left:auto">&#10530;</button></div>
       <div class="log" id="log"></div>
       <form class="composer" id="composer" autocomplete="off"><input id="text" type="text" placeholder="Message Jarvis" /><button type="submit">Send</button></form>
     </section>
@@ -135,7 +138,7 @@ let spoke=false,silenceMs=0,awaitingFinal=false;
 let audioQueue=[],playing=false,currentAudio=null;
 
 function state(s){ app.dataset.state=s; statusEl.textContent=LABELS[s]||s; const c=document.getElementById('caption'); if(c) c.textContent=LABELS[s]||s; }
-function view(v){ app.dataset.view=v; pop.hidden=(v==='none'); if(v==='input') quicktext.focus(); }
+function view(v){ app.dataset.view=v; pop.hidden=(v==='none'); if(v!=='chat') app.dataset.full='false'; if(v==='input') quicktext.focus(); }
 function el(c){const d=document.createElement('div');d.className='msg '+c;return d;}
 function notice(t){ if(app.dataset.view==='none') view('chat'); const d=el('bot'); d.textContent=t; log.appendChild(d); log.scrollTop=log.scrollHeight; }
 function addUser(t){const d=el('user');d.textContent=t;log.appendChild(d);log.scrollTop=log.scrollHeight;return d;}
@@ -188,6 +191,7 @@ function stopMic(){ streaming=false; if(ws){ try{ws.send(JSON.stringify({type:'r
 
 micBtn.onclick=()=>{ streaming?stopMic():startMic(); };
 document.querySelectorAll('[data-nav]').forEach(b=>b.onclick=()=>{ view(b.dataset.nav); if(b.dataset.nav==='settings') loadSettings(); });
+document.getElementById('btn-full').onclick=()=>{ app.dataset.full = app.dataset.full==='true'?'false':'true'; };
 composer.onsubmit=e=>{ e.preventDefault(); const t=input.value; input.value=''; sendText(t); };
 quickform.onsubmit=e=>{ e.preventDefault(); const t=quicktext.value; quicktext.value=''; sendText(t); };
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') view('none'); });
