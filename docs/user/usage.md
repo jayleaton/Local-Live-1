@@ -29,7 +29,11 @@ Toggle the keyboard control to open a text field and send a message without spea
 
 - **Response brain** — *Local* keeps replies on-device; *API* uses a remote model. Voice
   processing stays on the host either way.
-- **Max spoken sentences** — caps how much of a reply is read aloud (the full text still
+- **Speech recognition** — choose the speech-to-text model. *Sherpa Zipformer* is built in
+  and runs offline with no download. *NVIDIA Nemotron streaming* models are more accurate:
+  selecting one installs the NVIDIA runtime (first time, opt-in) and downloads the model,
+  showing progress in Settings. The active model is shown under the selector.
+- **Max spoken sentences** — caps how much of the reply is read aloud (the full text still
   appears on screen). Useful for long answers.
 - **TTS engine** — *Chatterbox* sounds more natural; *Kokoro* is faster.
 

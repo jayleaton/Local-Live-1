@@ -67,6 +67,17 @@ class JarvisService:
         self._runner.submit(self.harness.start())
         self._lock = threading.Lock()
         self._streaming = None
+        # One background speech-model job at a time (install runtime or pull model).
+        self._asr_lock = threading.Lock()
+        self._asr_job: dict = {
+            "running": False,
+            "kind": "",
+            "name": "",
+            "message": "",
+            "percent": None,
+            "done": False,
+            "error": None,
+        }
 
     def _build_tts(self):
         backend = getattr(self.cfg.voice, "tts_backend", "kokoro")
@@ -267,14 +278,74 @@ class JarvisService:
             nemo_available = False
         return [
             {"value": "sherpa", "label": "Sherpa Zipformer (fast, offline)", "available": True},
-            {"value": "nemotron", "label": "NVIDIA Nemotron 3.5 streaming", "available": nemo_available},
+            {"value": "nemotron", "label": "NVIDIA Nemotron streaming", "available": nemo_available},
         ]
+
+    def asr_models(self) -> dict:
+        """Catalog of speech models plus the currently active one."""
+        try:
+            from jarvis.stt import nemo_models
+
+            info = nemo_models.list_models()
+            info["cache_dir"] = str(nemo_models.cache_dir())
+        except Exception as e:  # noqa: BLE001
+            info = {"runtime_installed": False, "cli_path": None, "models": [], "error": f"{type(e).__name__}: {e}"}
+        info["active"] = {
+            "backend": self.cfg.voice.streaming_backend,
+            "nemo_model": self.cfg.voice.nemo_model,
+        }
+        return info
+
+    def asr_status(self) -> dict:
+        with self._asr_lock:
+            return dict(self._asr_job)
+
+    def start_asr_job(self, kind: str, name: str = "") -> dict:
+        if kind not in ("install", "pull"):
+            return {"started": False, "error": f"unknown job '{kind}'"}
+        with self._asr_lock:
+            if self._asr_job.get("running"):
+                return {"started": False, "error": "a speech-model job is already running"}
+            self._asr_job = {
+                "running": True,
+                "kind": kind,
+                "name": name,
+                "message": "starting…",
+                "percent": None,
+                "done": False,
+                "error": None,
+            }
+        threading.Thread(target=self._run_asr_job, args=(kind, name), daemon=True).start()
+        return {"started": True, "kind": kind, "name": name}
+
+    def _run_asr_job(self, kind: str, name: str) -> None:
+        from jarvis.stt import nemo_models
+
+        def progress(line: str) -> None:
+            with self._asr_lock:
+                self._asr_job["message"] = line[-300:]
+                pct = nemo_models.parse_percent(line)
+                if pct is not None:
+                    self._asr_job["percent"] = pct
+
+        try:
+            if kind == "pull":
+                nemo_models.pull(name, progress)
+            else:
+                nemo_models.install_runtime(progress)
+            with self._asr_lock:
+                self._asr_job.update(running=False, done=True, percent=100, message="done")
+        except Exception as e:  # noqa: BLE001 - surfaced to the UI
+            with self._asr_lock:
+                self._asr_job.update(running=False, done=True, error=f"{type(e).__name__}: {e}", message="failed")
 
     def apply_settings(self, data: dict) -> dict:
         if data.get("response_mode") in ("local", "api"):
             self.cfg.response_mode = data["response_mode"]
         if data.get("asr_backend") in ("nemotron", "sherpa"):
             self.cfg.voice.streaming_backend = data["asr_backend"]
+        if data.get("nemo_model"):
+            self.cfg.voice.nemo_model = str(data["nemo_model"])
         if data.get("local_model") and self.cfg.local is not None:
             self.cfg.local.model = data["local_model"]
         if data.get("api_model"):
@@ -310,6 +381,7 @@ class JarvisService:
         data.setdefault("voice", {})["tts_voice"] = self.cfg.voice.tts_voice
         data["voice"]["tts_backend"] = getattr(self.cfg.voice, "tts_backend", "kokoro")
         data["voice"]["streaming_backend"] = self.cfg.voice.streaming_backend
+        data["voice"]["nemo_model"] = self.cfg.voice.nemo_model
         data["voice"]["max_spoken_sentences"] = self.cfg.voice.max_spoken_sentences
         data["voice"]["endpointing_ms"] = self.cfg.voice.endpointing_ms
         try:
@@ -585,6 +657,10 @@ def _handler_for(service: JarvisService, index_html: str):
                 self._json(200, {"ok": True})
             elif path == "/settings":
                 self._json(200, service.get_settings())
+            elif path == "/asr/models":
+                self._json(200, service.asr_models())
+            elif path == "/asr/status":
+                self._json(200, service.asr_status())
             else:
                 self._send(404, b"not found", "text/plain")
 
@@ -608,6 +684,15 @@ def _handler_for(service: JarvisService, index_html: str):
                 elif path == "/settings":
                     payload = json.loads(data.decode("utf-8") or "{}")
                     self._json(200, service.apply_settings(payload))
+                elif path == "/asr/install":
+                    self._json(200, service.start_asr_job("install"))
+                elif path == "/asr/pull":
+                    payload = json.loads(data.decode("utf-8") or "{}")
+                    name = (payload.get("name") or "").strip()
+                    if not name:
+                        self._json(400, {"error": "missing model name"})
+                        return
+                    self._json(200, service.start_asr_job("pull", name))
                 else:
                     self._send(404, b"not found", "text/plain")
             except Exception as e:  # noqa: BLE001

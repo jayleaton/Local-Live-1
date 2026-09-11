@@ -109,6 +109,12 @@ INDEX_HTML = r"""<!doctype html>
       <label>Response brain <select id="s-mode"><option value="local">On-device</option><option value="api">API</option></select></label>
       <label id="s-local-row">On-device model <select id="s-local"></select></label>
       <label>Speech recognition <select id="s-asr"></select></label>
+      <div id="asr-info" style="font-size:11px;color:var(--muted);margin:-4px 0 2px"></div>
+      <div class="btnrow" id="asr-actions" style="display:none">
+        <button id="s-asr-install" style="display:none">Install NVIDIA runtime</button>
+        <button id="s-asr-download" style="display:none">Download model</button>
+      </div>
+      <div id="asr-progress" style="font-size:11px;color:var(--muted)"></div>
       <label>TTS engine <select id="s-tts-backend"><option value="chatterbox">Chatterbox (natural)</option><option value="kokoro">Kokoro (fast)</option></select></label>
       <label>Voice <select id="s-voice"></select></label>
       <label>Max spoken sentences <input id="s-cap" type="number" min="1" max="10" /></label>
@@ -140,6 +146,7 @@ let audioQueue=[],playing=false,currentAudio=null;
 // Client-side end-of-utterance fallback. Kept above the server's own endpointing
 // so a natural pause inside a sentence doesn't split it into several messages.
 let endpointMs=1200;
+let asrCatalog=null, asrPoll=null;
 
 function state(s){ app.dataset.state=s; statusEl.textContent=LABELS[s]||s; const c=document.getElementById('caption'); if(c) c.textContent=LABELS[s]||s; }
 function view(v){ app.dataset.view=v; pop.hidden=(v==='none'); if(v!=='chat') app.dataset.full='false'; if(v==='input') quicktext.focus(); }
@@ -210,12 +217,45 @@ async function loadSettings(){ const d=await (await fetch('/settings')).json();
   document.getElementById('s-mode').value=d.response_mode;
   const lm=document.getElementById('s-local'); lm.innerHTML=''; (d.local_models||[]).forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m.split('/').pop();if(m===d.local_model)o.selected=true;lm.appendChild(o);});
   document.getElementById('s-local-row').style.display=d.response_mode==='local'?'flex':'none';
-  const asr=document.getElementById('s-asr'); asr.innerHTML=''; (d.asr_backends||[]).forEach(x=>{const o=document.createElement('option');o.value=x.value;o.textContent=x.label+(x.available?'':' — not installed');o.disabled=!x.available;if(x.value===d.asr_backend)o.selected=true;asr.appendChild(o);});
   const v=document.getElementById('s-voice'); v.innerHTML=''; (d.voices||[]).forEach(x=>{const o=document.createElement('option');o.value=x;o.textContent=x;if(x===d.tts_voice)o.selected=true;v.appendChild(o);});
   document.getElementById('s-tts-backend').value=d.tts_backend||'kokoro'; v.disabled=(d.tts_backend==='chatterbox');
-  document.getElementById('s-cap').value=d.max_spoken_sentences; }
-async function saveSettings(){ const body={ response_mode:document.getElementById('s-mode').value, local_model:document.getElementById('s-local').value, asr_backend:document.getElementById('s-asr').value, tts_backend:document.getElementById('s-tts-backend').value, tts_voice:document.getElementById('s-voice').value, max_spoken_sentences:parseInt(document.getElementById('s-cap').value||'3',10) };
+  document.getElementById('s-cap').value=d.max_spoken_sentences; loadAsr(); }
+async function saveSettings(){ const sel=document.getElementById('s-asr').value, nemo=sel.indexOf('nemo:')===0?sel.slice(5):'';
+  const body={ response_mode:document.getElementById('s-mode').value, local_model:document.getElementById('s-local').value, asr_backend:nemo?'nemotron':'sherpa', nemo_model:nemo, tts_backend:document.getElementById('s-tts-backend').value, tts_voice:document.getElementById('s-voice').value, max_spoken_sentences:parseInt(document.getElementById('s-cap').value||'3',10) };
   try{ await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); }catch(e){} }
+async function loadAsr(){ try{ asrCatalog=await (await fetch('/asr/models')).json(); }catch(e){ return; }
+  const d=asrCatalog, sel=document.getElementById('s-asr'), info=document.getElementById('asr-info');
+  sel.innerHTML=''; const add=(v,t)=>{const o=document.createElement('option');o.value=v;o.textContent=t;sel.appendChild(o);};
+  add('sherpa','Sherpa Zipformer (built-in, offline)');
+  const streaming=(d.models||[]).filter(m=>m.streaming);
+  if(d.runtime_installed){ streaming.forEach(m=>add('nemo:'+m.name, m.label+(m.size_mb?' — '+m.size_mb+' MB':''))); }
+  else { add('nemo:__missing__','NVIDIA Nemotron — runtime not installed'); if(sel.lastChild) sel.lastChild.disabled=true; }
+  const active=d.active||{};
+  if(active.backend==='nemotron'&&active.nemo_model) { const want=streaming.find(m=>m.name===active.nemo_model||m.repo===active.nemo_model); if(want) sel.value='nemo:'+want.name; }
+  if(!d.runtime_installed) info.textContent='NVIDIA NeMo-Speech runtime not found. Install it to use Nemotron models.';
+  else if(!streaming.length) info.textContent='No ASR models reported by nemo-speech.';
+  updateAsrActions(); }
+function updateAsrActions(){ const d=asrCatalog||{}, sel=document.getElementById('s-asr').value;
+  const install=document.getElementById('s-asr-install'), dl=document.getElementById('s-asr-download'), actions=document.getElementById('asr-actions'), info=document.getElementById('asr-info');
+  install.style.display = d.runtime_installed?'none':'block';
+  actions.style.display = (d.runtime_installed||sel.indexOf('nemo:')===0)?'flex':'none';
+  let need=false, m=null;
+  if(d.runtime_installed&&sel.indexOf('nemo:')===0){ m=(d.models||[]).find(x=>'nemo:'+x.name===sel); need=!!m&&!m.downloaded; }
+  dl.style.display = need?'block':'none';
+  if(m) dl.textContent='Download '+m.label+(m.size_mb?' ('+m.size_mb+' MB)':'');
+  if(d.runtime_installed&&sel.indexOf('nemo:')===0&&m&&m.downloaded) info.textContent='Active: '+m.label+' — downloaded.';
+  else if(sel==='sherpa') info.textContent='Using the built-in Sherpa Zipformer (no download).'; }
+async function runAsrJob(url,body){ try{ const r=await (await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})})).json(); if(r.error){ document.getElementById('asr-progress').textContent=r.error; return; } if(!r.started){ document.getElementById('asr-progress').textContent=r.error||'could not start'; return; } }catch(e){ document.getElementById('asr-progress').textContent='error: '+e.message; return; }
+  if(asrPoll) clearInterval(asrPoll); const p=document.getElementById('asr-progress');
+  asrPoll=setInterval(async()=>{ let s={}; try{ s=await (await fetch('/asr/status')).json(); }catch(e){ return; }
+    p.textContent = s.running ? (s.kind==='install'?'Installing runtime… ':'Downloading… ')+s.message : (s.error?('Failed: '+s.error):(s.done?'Done.':'')) ;
+    if(!s.running){ clearInterval(asrPoll); asrPoll=null; if(s.done&&!s.error) loadAsr(); } }, 1000); }
+document.getElementById('s-asr').onchange=()=>{ updateAsrActions(); saveSettings();
+  const d=asrCatalog||{}, sel=document.getElementById('s-asr').value;
+  if(sel.indexOf('nemo:')===0){ const m=(d.models||[]).find(x=>'nemo:'+x.name===sel);
+    if(m&&!m.downloaded&&!asrPoll) runAsrJob('/asr/pull',{name:m.name}); } };
+document.getElementById('s-asr-install').onclick=()=>runAsrJob('/asr/install',{});
+document.getElementById('s-asr-download').onclick=()=>{ const sel=document.getElementById('s-asr').value; if(sel.indexOf('nemo:')===0) runAsrJob('/asr/pull',{name:sel.slice(5)}); };
 document.getElementById('s-mode').onchange=()=>{ document.getElementById('s-local-row').style.display=document.getElementById('s-mode').value==='local'?'flex':'none'; };
 document.getElementById('s-tts-backend').onchange=()=>{ document.getElementById('s-voice').disabled=document.getElementById('s-tts-backend').value==='chatterbox'; };
 document.getElementById('s-save').onclick=saveSettings;
