@@ -123,6 +123,22 @@ def _cached(repo: str, root: Optional[Path] = None) -> bool:
     return False
 
 
+def cached_bytes(repo: str, root: Optional[Path] = None) -> int:
+    """Bytes of this repo already present in the cache (for a progress bar)."""
+    base = cache_dir() if root is None else Path(root)
+    token = repo.split("/")[-1]
+    if not token or not base.exists():
+        return 0
+    total = 0
+    for path in base.rglob("*"):
+        try:
+            if path.is_file() and token in str(path.relative_to(base)):
+                total += path.stat().st_size
+        except OSError:  # pragma: no cover
+            continue
+    return total
+
+
 def _entry(model: dict, root: Optional[Path] = None) -> Optional[dict]:
     repo = model.get("repo") or model.get("id") or ""
     if not repo or not _is_asr(model):
@@ -183,9 +199,22 @@ def _stream(cmd: list[str], on_progress: Optional[Callable[[str], None]], timeou
         **_no_window(),
     )
     assert proc.stdout is not None
-    for line in iter(proc.stdout.readline, ""):
-        if on_progress and line.strip():
-            on_progress(line.rstrip())
+    # curl-style progress uses bare carriage returns; split on both so the bar
+    # can advance without waiting for a newline that may never come.
+    buf = ""
+    while True:
+        ch = proc.stdout.read(1)
+        if ch == "":
+            break
+        if ch in ("\r", "\n"):
+            line = buf.strip()
+            if line and on_progress:
+                on_progress(line)
+            buf = ""
+        else:
+            buf += ch
+    if buf.strip() and on_progress:
+        on_progress(buf.strip())
     proc.wait(timeout=timeout)
     if proc.returncode != 0:
         raise RuntimeError(f"{Path(cmd[0]).name} failed (exit {proc.returncode})")

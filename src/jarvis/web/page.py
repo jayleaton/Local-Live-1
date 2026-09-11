@@ -88,6 +88,10 @@ INDEX_HTML = r"""<!doctype html>
   .tabs .tab[aria-selected="true"]{ color:var(--fg); border-bottom-color:var(--accent); }
   .tabpane{ display:none; flex-direction:column; gap:9px; min-height:196px; }
   .tabpane.active{ display:flex; }
+  .pbar{ height:8px; border-radius:999px; background:var(--chip); overflow:hidden; }
+  .pbar-fill{ height:100%; width:0%; background:var(--accent); border-radius:999px; transition:width .3s ease; }
+  .pbar.indet .pbar-fill{ width:35%; transition:none; animation:indet 1.1s ease-in-out infinite; }
+  @keyframes indet{ 0%{ transform:translateX(-130%); } 100%{ transform:translateX(330%); } }
 </style>
 </head>
 <body>
@@ -129,7 +133,10 @@ INDEX_HTML = r"""<!doctype html>
             <button id="s-asr-install" style="display:none">Install NVIDIA runtime</button>
             <button id="s-asr-download" style="display:none">Download model</button>
           </div>
-          <div id="asr-progress" style="font-size:11px;color:var(--muted)"></div>
+          <div id="asr-progress-wrap" style="display:none">
+            <div class="pbar" id="asr-bar"><div class="pbar-fill" id="asr-bar-fill"></div></div>
+            <div id="asr-progress" style="font-size:11px;color:var(--muted);margin-top:6px"></div>
+          </div>
         </div>
         <div class="tabpane" data-pane="voice">
           <label>TTS engine <select id="s-tts-backend"><option value="chatterbox">Chatterbox (natural)</option><option value="kokoro">Kokoro (fast)</option></select></label>
@@ -268,17 +275,34 @@ function updateAsrActions(){ const d=asrCatalog||{}, sel=document.getElementById
   if(m) dl.textContent='Download '+m.label+(m.size_mb?' ('+m.size_mb+' MB)':'');
   if(d.runtime_installed&&sel.indexOf('nemo:')===0&&m&&m.downloaded) info.textContent='Active: '+m.label+' — downloaded.';
   else if(sel==='sherpa') info.textContent='Using the built-in Sherpa Zipformer (no download).'; }
-async function runAsrJob(url,body){ try{ const r=await (await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})})).json(); if(r.error){ document.getElementById('asr-progress').textContent=r.error; return; } if(!r.started){ document.getElementById('asr-progress').textContent=r.error||'could not start'; return; } }catch(e){ document.getElementById('asr-progress').textContent='error: '+e.message; return; }
-  if(asrPoll) clearInterval(asrPoll); const p=document.getElementById('asr-progress');
+let asrBusy=false;
+function fmtMB(b){ return (b/1048576).toFixed(1)+' MB'; }
+function asrControls(enabled){ document.getElementById('s-asr').disabled=!enabled; document.getElementById('s-asr-install').disabled=!enabled; document.getElementById('s-asr-download').disabled=!enabled; }
+async function runAsrJob(url,body){ if(asrBusy) return; asrBusy=true; asrControls(false);
+  const p=document.getElementById('asr-progress'), bar=document.getElementById('asr-bar'), fill=document.getElementById('asr-bar-fill'), wrap=document.getElementById('asr-progress-wrap');
+  const finish=()=>{ asrBusy=false; asrControls(true); updateAsrActions(); };
+  try{ const r=await (await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})})).json(); if(r.error||!r.started){ wrap.style.display='block'; p.textContent=r.error||'could not start'; finish(); return; } }
+  catch(e){ wrap.style.display='block'; p.textContent='error: '+e.message; finish(); return; }
+  if(asrPoll) clearInterval(asrPoll);
+  wrap.style.display='block'; bar.classList.remove('indet'); fill.style.background='var(--accent)'; fill.style.width='0%'; p.textContent='Starting…';
   asrPoll=setInterval(async()=>{ let s={}; try{ s=await (await fetch('/asr/status')).json(); }catch(e){ return; }
-    p.textContent = s.running ? (s.kind==='install'?'Installing runtime… ':'Downloading… ')+s.message : (s.error?('Failed: '+s.error):(s.done?'Done.':'')) ;
-    if(!s.running){ clearInterval(asrPoll); asrPoll=null; if(s.done&&!s.error) loadAsr(); } }, 1000); }
+    const verb = s.kind==='install' ? 'Installing NVIDIA runtime… ' : ('Downloading '+(s.label||'model')+'… ');
+    if(s.running){
+      const total=s.bytes_total||0, done=s.bytes_done||0;
+      let pct=null, note='';
+      if(total>0 && done>0){ pct=Math.round(100*done/total); note='  ('+fmtMB(done)+' / '+fmtMB(total)+')'; }
+      else if(typeof s.percent==='number'){ pct=s.percent; }
+      if(pct!=null){ bar.classList.remove('indet'); fill.style.width=Math.max(0,Math.min(100,pct))+'%'; p.textContent=verb+pct+'%'+note; }
+      else { bar.classList.add('indet'); fill.style.width=''; p.textContent=verb.replace(/\.\.\. $/,'…'); }
+    } else if(s.error){ bar.classList.remove('indet'); fill.style.background='var(--muted)'; fill.style.width='100%'; p.textContent='Failed: '+s.error; clearInterval(asrPoll); asrPoll=null; finish(); }
+    else { bar.classList.remove('indet'); fill.style.width='100%'; p.textContent=(s.kind==='install'?'NVIDIA runtime installed.':'Download complete.'); clearInterval(asrPoll); asrPoll=null; finish(); loadAsr(); setTimeout(()=>{ wrap.style.display='none'; }, 3000); }
+  }, 1000); }
 document.getElementById('s-asr').onchange=()=>{ updateAsrActions(); saveSettings();
   const d=asrCatalog||{}, sel=document.getElementById('s-asr').value;
   if(sel.indexOf('nemo:')===0){ const m=(d.models||[]).find(x=>'nemo:'+x.name===sel);
-    if(m&&!m.downloaded&&!asrPoll) runAsrJob('/asr/pull',{name:m.name}); } };
+    if(m&&!m.downloaded&&!asrBusy) runAsrJob('/asr/pull',{name:m.name,repo:m.repo,size:m.size,label:m.label}); } };
 document.getElementById('s-asr-install').onclick=()=>runAsrJob('/asr/install',{});
-document.getElementById('s-asr-download').onclick=()=>{ const sel=document.getElementById('s-asr').value; if(sel.indexOf('nemo:')===0) runAsrJob('/asr/pull',{name:sel.slice(5)}); };
+document.getElementById('s-asr-download').onclick=()=>{ const d=asrCatalog||{}, sel=document.getElementById('s-asr').value; if(sel.indexOf('nemo:')===0){ const m=(d.models||[]).find(x=>'nemo:'+x.name===sel)||{}; runAsrJob('/asr/pull',{name:sel.slice(5),repo:m.repo,size:m.size,label:m.label}); } };
 document.getElementById('s-mode').onchange=()=>{ document.getElementById('s-local-row').style.display=document.getElementById('s-mode').value==='local'?'flex':'none'; };
 document.getElementById('s-tts-backend').onchange=()=>{ document.getElementById('s-voice').disabled=document.getElementById('s-tts-backend').value==='chatterbox'; };
 document.getElementById('s-save').onclick=saveSettings;

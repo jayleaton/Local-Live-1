@@ -298,9 +298,18 @@ class JarvisService:
 
     def asr_status(self) -> dict:
         with self._asr_lock:
-            return dict(self._asr_job)
+            job = dict(self._asr_job)
+        if job.get("running") and job.get("kind") == "pull" and job.get("repo"):
+            try:
+                from jarvis.stt import nemo_models
 
-    def start_asr_job(self, kind: str, name: str = "") -> dict:
+                job["bytes_done"] = nemo_models.cached_bytes(job["repo"])
+                job["bytes_total"] = job.get("size") or 0
+            except Exception:  # noqa: BLE001 - progress is best-effort
+                pass
+        return job
+
+    def start_asr_job(self, kind: str, name: str = "", *, repo: str = "", size: int = 0, label: str = "") -> dict:
         if kind not in ("install", "pull"):
             return {"started": False, "error": f"unknown job '{kind}'"}
         with self._asr_lock:
@@ -310,6 +319,11 @@ class JarvisService:
                 "running": True,
                 "kind": kind,
                 "name": name,
+                "repo": repo,
+                "size": size,
+                "label": label,
+                "bytes_done": 0,
+                "bytes_total": size,
                 "message": "starting…",
                 "percent": None,
                 "done": False,
@@ -692,7 +706,16 @@ def _handler_for(service: JarvisService, index_html: str):
                     if not name:
                         self._json(400, {"error": "missing model name"})
                         return
-                    self._json(200, service.start_asr_job("pull", name))
+                    self._json(
+                        200,
+                        service.start_asr_job(
+                            "pull",
+                            name,
+                            repo=payload.get("repo") or "",
+                            size=int(payload.get("size") or 0),
+                            label=payload.get("label") or "",
+                        ),
+                    )
                 else:
                     self._send(404, b"not found", "text/plain")
             except Exception as e:  # noqa: BLE001
