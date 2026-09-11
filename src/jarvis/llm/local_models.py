@@ -21,8 +21,14 @@ MLX_CATALOG = [
 ]
 
 GGUF_CATALOG = [
-    {"repo": "unsloth/Qwen3.5-9B-GGUF", "file": "Qwen3.5-9B-Q4_K_M.gguf", "label": "Qwen3.5 9B (GGUF Q4_K_M)", "runtime": "llama.cpp"},
-    {"repo": "unsloth/Qwen3.5-4B-GGUF", "file": "Qwen3.5-4B-Q4_K_M.gguf", "label": "Qwen3.5 4B (GGUF Q4_K_M)", "runtime": "llama.cpp"},
+    {"repo": "unsloth/Qwen3.5-4B-GGUF", "file": "Qwen3.5-4B-Q4_K_M.gguf", "label": "Qwen3.5 4B (fast)", "runtime": "llama.cpp"},
+    {"repo": "unsloth/Qwen3.5-9B-GGUF", "file": "Qwen3.5-9B-Q4_K_M.gguf", "label": "Qwen3.5 9B (balanced)", "runtime": "llama.cpp"},
+    {
+        "repo": "brunopio/Qwen3.5-14B-A3B-Claude-4.6-Opus-Reasoning-Distilled-reap-Q4_K_M-GGUF",
+        "file": "qwen3.5-14b-a3b-claude-4.6-opus-reasoning-distilled-reap-q4_k_m.gguf",
+        "label": "Qwen3.5 14B-A3B (smarter)",
+        "runtime": "llama.cpp",
+    },
 ]
 
 _sizes: dict[str, int] = {}
