@@ -44,7 +44,7 @@ class PolicyConfig:
 class HarnessSettings:
     max_steps: int = 6
     history_turns: int = 12
-    max_tool_result_chars: int = 4000
+    max_tool_result_chars: int = 16000
 
 
 @dataclass

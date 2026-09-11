@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -35,7 +36,7 @@ DEFAULT_SYSTEM_PROMPT = (
 class HarnessConfig:
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     max_steps: int = 6
-    max_tool_result_chars: int = 4000
+    max_tool_result_chars: int = 16000
     temperature: float = 0.3
     max_tokens: int = 1024
     history_turns: int = 12
@@ -176,6 +177,7 @@ class AgentHarness:
         records: list[ToolRecord] = []
         denied: list[str] = []
         steps = 0
+        seen: dict[str, ToolResult] = {}
 
         self.audit.add("user", text=user_text)
         await self.bus.publish("user", {"text": user_text})
@@ -248,8 +250,14 @@ class AgentHarness:
                 if response.tool_calls:
                     messages.append(Message.assistant(response.text or None, response.tool_calls))
                     for call in response.tool_calls:
+                        key = json.dumps([call.name, call.arguments], sort_keys=True, default=str)
+                        if key in seen:
+                            # Identical call already ran this turn; reuse the result.
+                            messages.append(Message.tool(call.id, call.name, self._sanitize(seen[key])))  # type: ignore[arg-type]
+                            continue
                         await self._execute(call, specs, cancel, records)
                         rec = records[-1]
+                        seen[key] = rec.result
                         if not rec.allowed:
                             denied.append(call.name)
                         messages.append(Message.tool(call.id, call.name, self._sanitize(rec.result)))  # type: ignore[arg-type]
@@ -290,6 +298,7 @@ class AgentHarness:
         records: list[ToolRecord] = []
         denied: list[str] = []
         steps = 0
+        seen: dict[str, ToolResult] = {}
         self.audit.add("user", text=user_text)
         await self.bus.publish("user", {"text": user_text})
         messages: list[Message] = [Message.system(self._system_prompt(specs))]
@@ -310,9 +319,15 @@ class AgentHarness:
             return
 
         async def run_tool(call: ToolCall):
+            key = json.dumps([call.name, call.arguments], sort_keys=True, default=str)
+            if key in seen:
+                messages.append(Message.tool(call.id, call.name, self._sanitize(seen[key])))  # type: ignore[arg-type]
+                yield {"type": "tool_result", "tool": call.name, "ok": bool(seen[key] and seen[key].ok)}
+                return
             yield {"type": "tool_start", "tool": call.name, "arguments": call.arguments}
             await self._execute(call, specs, cancel, records)
             rec = records[-1]
+            seen[key] = rec.result
             if not rec.allowed:
                 denied.append(call.name)
             messages.append(Message.tool(call.id, call.name, self._sanitize(rec.result)))  # type: ignore[arg-type]

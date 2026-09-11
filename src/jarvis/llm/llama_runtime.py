@@ -241,7 +241,7 @@ def start(
     model_path: str,
     port: int,
     *,
-    ctx: int = 8192,
+    ctx: int = 16384,
     n_gpu_layers: int = 999,
     wait: float = 240.0,
     chat_template_file: Optional[str] = None,
@@ -255,6 +255,7 @@ def start(
         "-m", str(model_path),
         "-ngl", str(n_gpu_layers),
         "-c", str(ctx),
+        "--parallel", "1",  # single user: give the whole context to one request
         "-fa", "on",  # flash attention: faster and smaller KV cache
     ]
     if chat_template_file:
