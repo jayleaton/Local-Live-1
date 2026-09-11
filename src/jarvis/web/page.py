@@ -137,6 +137,9 @@ let streaming=false,partialBubble=null,partialText="";
 let botBubble=null,botText="",userCommitted=false;
 let spoke=false,silenceMs=0,awaitingFinal=false;
 let audioQueue=[],playing=false,currentAudio=null;
+// Client-side end-of-utterance fallback. Kept above the server's own endpointing
+// so a natural pause inside a sentence doesn't split it into several messages.
+let endpointMs=1200;
 
 function state(s){ app.dataset.state=s; statusEl.textContent=LABELS[s]||s; const c=document.getElementById('caption'); if(c) c.textContent=LABELS[s]||s; }
 function view(v){ app.dataset.view=v; pop.hidden=(v==='none'); if(v!=='chat') app.dataset.full='false'; if(v==='input') quicktext.focus(); }
@@ -180,7 +183,7 @@ function startPCM(){ audioCtx=new (window.AudioContext||window.webkitAudioContex
     for(let i=0;i<n;i++){ const pos=i*ratio, i0=Math.floor(pos), a=f[i0]||0, b=f[i0+1]!==undefined?f[i0+1]:a;
       const s=Math.max(-1,Math.min(1,a+(b-a)*(pos-i0))); sum+=s*s; pcm[i]=s<0?s*0x8000:s*0x7FFF; }
     const rms=Math.sqrt(sum/n), frameMs=n*1000/16000;
-    if(rms>0.012){ spoke=true; silenceMs=0; awaitingFinal=false; } else if(spoke){ silenceMs+=frameMs; if(silenceMs>450&&!awaitingFinal){ awaitingFinal=true; spoke=false; onFinalize(); } }
+    if(rms>0.012){ spoke=true; silenceMs=0; awaitingFinal=false; } else if(spoke){ silenceMs+=frameMs; if(silenceMs>endpointMs&&!awaitingFinal){ awaitingFinal=true; spoke=false; onFinalize(); } }
     ws.send(pcm.buffer); };
   micSrc.connect(procNode); procNode.connect(muteGain); muteGain.connect(audioCtx.destination); }
 async function startMic(){ if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){ notice('Microphone needs a secure context (HTTPS). Open '+location.href.replace(/^http:/,'https:')+'.'); return; }
@@ -218,6 +221,7 @@ document.getElementById('s-tts-backend').onchange=()=>{ document.getElementById(
 document.getElementById('s-save').onclick=saveSettings;
 document.getElementById('s-preview').onclick=async()=>{ await saveSettings(); try{ const r=await (await fetch('/speak',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'Hi, this is how I sound.'})})).json(); enqueueAudio(r.audio); }catch(e){} };
 fetch('/health').catch(()=>{});
+fetch('/settings').then(r=>r.json()).then(d=>{ if(d.endpointing_ms) endpointMs=Math.max(1000,parseInt(d.endpointing_ms,10)+200); }).catch(()=>{});
 // Preview hooks (docs/screenshots): ?view=menu|chat|input|settings&state=listening&theme=dark
 const _q=new URLSearchParams(location.search);
 if(_q.get('theme')) document.documentElement.dataset.theme=_q.get('theme');

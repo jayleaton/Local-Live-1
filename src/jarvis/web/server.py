@@ -89,7 +89,10 @@ class JarvisService:
         if self._streaming is None:
             from jarvis.stt.sherpa_streaming import SherpaStreamingSTT
 
-            self._streaming = SherpaStreamingSTT()
+            # Match the configured endpointing so a natural pause mid-sentence
+            # doesn't end the turn and split one utterance into several messages.
+            trailing = max(1.0, float(self.cfg.voice.endpointing_ms) / 1000.0)
+            self._streaming = SherpaStreamingSTT(trailing_silence=trailing)
         return self._streaming
 
     async def respond_streaming(self, text: str):

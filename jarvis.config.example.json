@@ -69,7 +69,7 @@
     "streaming_backend": "nemotron",
     "nemo_url": "ws://127.0.0.1:8081",
     "nemo_model": "nemotron-3.5",
-    "endpointing_ms": 600,
+    "endpointing_ms": 1200,
     "greeting": "Hi, I'm Jarvis.",
     "tts_backend": "chatterbox"
   },
