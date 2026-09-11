@@ -68,6 +68,12 @@ class JarvisService:
         self._lock = threading.Lock()
         self._streaming = None
         self._llama_proc = None
+        try:
+            from jarvis.llm import llama_runtime
+
+            llama_runtime.stop_all()  # clear orphaned servers from a previous run
+        except Exception:  # noqa: BLE001
+            pass
         if cfg.response_mode != "api" and cfg.local is not None:
             try:
                 self.harness.provider = self._make_provider()

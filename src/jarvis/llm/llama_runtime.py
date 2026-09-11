@@ -172,7 +172,73 @@ def install(backend: Optional[str] = None, on_progress: Optional[Callable[[str],
         shutil.rmtree(work, ignore_errors=True)
 
 
-def start(model_path: str, port: int, *, ctx: int = 8192, n_gpu_layers: int = 999, wait: float = 180.0) -> subprocess.Popen:
+_PIDS = CACHE / "servers.json"
+
+
+def _read_pids() -> list[int]:
+    try:
+        return [int(p) for p in json.loads(_PIDS.read_text())]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _write_pids(pids: list[int]) -> None:
+    try:
+        CACHE.mkdir(parents=True, exist_ok=True)
+        _PIDS.write_text(json.dumps(sorted({int(p) for p in pids})))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _kill(pid: int) -> None:
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/pid", str(pid), "/T", "/F"], capture_output=True)
+        else:
+            os.kill(pid, 15)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _kill_orphans() -> None:
+    """Kill any llama-server running from our cache (covers crash/restart leaks)."""
+    if os.name != "nt":
+        return
+    needle = str(CACHE)
+    ps = (
+        "Get-CimInstance Win32_Process -Filter \"name='llama-server.exe'\" | "
+        f"Where-Object {{ $_.CommandLine -like '*{needle}*' }} | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+    )
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            capture_output=True,
+            timeout=25,
+            creationflags=0x08000000,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def stop_all() -> None:
+    """Kill llama-servers we started earlier (e.g. left over after a crash).
+
+    Without this, switching models or restarting the app leaks a server, and two
+    loaded models can exceed VRAM and spill into system RAM.
+    """
+    for pid in _read_pids():
+        _kill(pid)
+    _write_pids([])
+    for proc in getattr(stop_all, "_procs", []):
+        if proc and proc.poll() is None:
+            _kill(proc.pid)
+    stop_all._procs = []  # type: ignore[attr-defined]
+    _kill_orphans()
+
+
+def start(model_path: str, port: int, *, ctx: int = 8192, n_gpu_layers: int = 999, wait: float = 240.0) -> subprocess.Popen:
+    stop_all()  # never run two models at once
     server = find_server()
     if not server:
         server = install()
@@ -181,34 +247,41 @@ def start(model_path: str, port: int, *, ctx: int = 8192, n_gpu_layers: int = 99
         "-m", str(model_path),
         "-ngl", str(n_gpu_layers),
         "-c", str(ctx),
+        "-fa", "on",  # flash attention: faster and smaller KV cache
+        "--reasoning", "off",  # no thinking tokens (speed + no leaked reasoning)
         "--host", "127.0.0.1",
         "--port", str(port),
     ]
-    kwargs: dict = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    log = CACHE / "llama-server.log"
+    try:
+        CACHE.mkdir(parents=True, exist_ok=True)
+        logf = open(log, "ab")
+    except Exception:  # noqa: BLE001
+        logf = subprocess.DEVNULL  # type: ignore[assignment]
+    kwargs: dict = {"stdout": logf, "stderr": subprocess.STDOUT}
     if os.name == "nt":
         kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
     proc = subprocess.Popen(cmd, **kwargs)
+    if not hasattr(stop_all, "_procs"):
+        stop_all._procs = []  # type: ignore[attr-defined]
+    stop_all._procs.append(proc)  # type: ignore[attr-defined]
+    _write_pids(_read_pids() + [proc.pid])
     deadline = time.time() + wait
     while time.time() < deadline:
         if proc.poll() is not None:
-            raise RuntimeError("llama-server exited during startup")
+            raise RuntimeError(f"llama-server exited during startup (see {log})")
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as r:  # noqa: S310
                 if r.status == 200:
                     return proc
         except Exception:  # noqa: BLE001
             time.sleep(1.0)
-    proc.terminate()
-    raise RuntimeError("llama-server did not become ready")
+    _kill(proc.pid)
+    raise RuntimeError(f"llama-server did not become ready (see {log})")
 
 
 def stop(proc: Optional[subprocess.Popen]) -> None:
     if proc is None:
         return
-    try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/pid", str(proc.pid), "/T", "/F"], capture_output=True)
-        else:
-            proc.terminate()
-    except Exception:  # noqa: BLE001
-        pass
+    _kill(proc.pid)
+    _write_pids([p for p in _read_pids() if p != proc.pid])

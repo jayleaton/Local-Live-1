@@ -99,7 +99,17 @@ function writeBackendConfig() {
   out.model = { ...(example.model || {}), ...(saved.model || {}) };
   out.local = { ...(example.local || {}), ...(saved.local || {}) };
   out.agents = saved.agents || example.agents;
-  out.response_mode = cfg.brain;
+  // The web UI owns response_mode. Only apply the desktop Brain setting when the
+  // user actually changed it here; otherwise a saved On-device choice would
+  // revert to API on every launch.
+  if (cfg._applyBrain) {
+    out.response_mode = cfg.brain;
+    cfg._applyBrain = false;
+  } else if (saved.response_mode) {
+    out.response_mode = saved.response_mode;
+  } else {
+    out.response_mode = cfg.brain;
+  }
   // Platform defaults only when the user hasn't chosen one yet.
   if (!out.voice.streaming_backend) out.voice.streaming_backend = isMac ? "nemotron" : "sherpa";
   if (!out.voice.tts_backend) out.voice.tts_backend = isMac ? "chatterbox" : "kokoro";
@@ -388,7 +398,9 @@ function createTray() {
 }
 
 ipcMain.on("jarvis-save-settings", async (_e, data) => {
+  const brainChanged = data && data.brain !== undefined && data.brain !== cfg.brain;
   cfg = { ...cfg, ...data };
+  cfg._applyBrain = brainChanged;
   saveConfig();
   refreshBackendUrl();
   registerShortcuts();

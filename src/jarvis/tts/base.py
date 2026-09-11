@@ -11,12 +11,14 @@ _CODE_BLOCK = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE = re.compile(r"`([^`]*)`")
 _MD_LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _MD_PREFIX = re.compile(r"^\s*(#{1,6}\s*|[-*+]\s+|\d+[.)]\s+)", re.MULTILINE)
+_THINK = re.compile(r"<think>.*?</think>|<think>.*$|</think>", re.DOTALL | re.IGNORECASE)
 
 
 def to_speech_text(text: str) -> str:
     """Strip anything that should not be read aloud (code, markdown, paths)."""
     if not text:
         return ""
+    text = _THINK.sub(" ", text)
     text = _CODE_BLOCK.sub(" I've prepared the code. ", text)
     text = _INLINE_CODE.sub(r"\1", text)
     text = _MD_LINK.sub(r"\1", text)

@@ -15,6 +15,52 @@ from jarvis.core.types import LLMResponse, Message, ToolCall, ToolSpec
 from jarvis.llm.base import LLMProvider, parse_tool_calls
 
 _TOOL_NAME_SAFE = re.compile(r"[^a-zA-Z0-9_-]")
+_THINK = re.compile(r"<think>.*?</think>|<think>.*$|</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_think(text: str) -> str:
+    """Remove leaked reasoning (`<think>...</think>`) from a model reply."""
+    if not text:
+        return text
+    return _THINK.sub("", text).strip()
+
+
+class _ThinkStripper:
+    """Stateful `<think>` filter that tolerates tags split across stream deltas."""
+
+    def __init__(self) -> None:
+        self._in = False
+        self._buf = ""
+
+    def feed(self, chunk: str) -> str:
+        self._buf += chunk
+        out: list[str] = []
+        while self._buf:
+            if self._in:
+                i = self._buf.find("</think>")
+                if i == -1:
+                    self._buf = self._buf[-8:]
+                    break
+                self._buf = self._buf[i + len("</think>"):]
+                self._in = False
+                continue
+            i = self._buf.find("<think>")
+            if i == -1:
+                keep = 6
+                if len(self._buf) > keep:
+                    out.append(self._buf[:-keep])
+                    self._buf = self._buf[-keep:]
+                break
+            out.append(self._buf[:i])
+            self._buf = self._buf[i + len("<think>"):]
+            self._in = True
+        return "".join(out)
+
+    def flush(self) -> str:
+        tail = "" if self._in else self._buf
+        self._buf = ""
+        self._in = False
+        return tail
 
 
 def sanitize_tool_name(name: str) -> str:
@@ -183,7 +229,7 @@ class OpenAICompatProvider(LLMProvider):
             raise RuntimeError(f"LLM returned no choices: {json.dumps(result)[:500]}")
         message = choices[0].get("message", {}) or {}
         return LLMResponse(
-            text=message.get("content") or "",
+            text=_strip_think(message.get("content") or ""),
             tool_calls=parse_tool_calls(message.get("tool_calls") or [], name_decoder=decoder),
             finish_reason=choices[0].get("finish_reason", "stop"),
             usage=result.get("usage") or {},
@@ -232,6 +278,7 @@ class OpenAICompatProvider(LLMProvider):
         threading.Thread(target=self._sse_worker, args=(payload, q, cancel), daemon=True).start()
 
         fragments: dict[int, dict] = {}
+        stripper = _ThinkStripper()
         while True:
             item = await asyncio.to_thread(q.get)
             if item is None:
@@ -249,7 +296,9 @@ class OpenAICompatProvider(LLMProvider):
             delta = choices[0].get("delta") or {}
             content = delta.get("content")
             if content:
-                yield content
+                cleaned = stripper.feed(content)
+                if cleaned:
+                    yield cleaned
             for tc in delta.get("tool_calls") or []:
                 idx = tc.get("index", 0)
                 slot = fragments.setdefault(idx, {"id": "", "name": "", "args": ""})
@@ -260,6 +309,10 @@ class OpenAICompatProvider(LLMProvider):
                     slot["name"] = fn["name"]
                 if fn.get("arguments"):
                     slot["args"] += fn["arguments"]
+
+        tail = stripper.flush()
+        if tail:
+            yield tail
 
         calls: list[ToolCall] = []
         for idx in sorted(fragments):
