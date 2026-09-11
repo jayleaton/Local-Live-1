@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import importlib
 import os
-import sys
+import shutil
 import tarfile
+import tempfile
+import threading
+import time
 import urllib.request
 from pathlib import Path
 from typing import Optional
@@ -17,13 +20,113 @@ MODEL_URL = (
 )
 DEFAULT_CACHE = Path(os.environ.get("JARVIS_MODEL_DIR", Path.home() / ".cache" / "jarvis" / "models"))
 
+# `ensure_model` may run from several WebSocket handler threads at once (the UI
+# reconnects while the first download is still going). Serialize it and make the
+# on-disk result atomic, so a partial download/extract can never masquerade as a
+# usable model.
+_download_lock = threading.Lock()
+
+# The recognizer accepts either the int8 or the full-precision files; a complete
+# model has tokens plus at least one usable file from each of these groups.
+_REQUIRED_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("tokens.txt",),
+    (
+        "encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+        "encoder-epoch-99-avg-1-chunk-16-left-128.onnx",
+    ),
+    (
+        "decoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+        "decoder-epoch-99-avg-1-chunk-16-left-128.onnx",
+    ),
+    (
+        "joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+        "joiner-epoch-99-avg-1-chunk-16-left-128.onnx",
+    ),
+)
+
+
+def _model_complete(cache: Path) -> bool:
+    for group in _REQUIRED_GROUPS:
+        if not any((cache / name).is_file() and (cache / name).stat().st_size > 0 for name in group):
+            return False
+    return True
+
+
+def _safe_extract(tar: tarfile.TarFile, dest: Path) -> None:
+    try:
+        tar.extractall(dest, filter="data")  # py3.12+
+    except TypeError:  # pragma: no cover - older interpreters
+        tar.extractall(dest)  # noqa: S202 - trusted model host
+
+
+def _download(url: str, dest: Path, on_progress=None, retries: int = 3) -> None:
+    """Download to `dest` atomically, retrying on truncation/network errors."""
+    last: Optional[Exception] = None
+    for attempt in range(1, retries + 1):
+        part = dest.with_name(dest.name + ".part")
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "jarvis/0.0.1"})
+            with urllib.request.urlopen(req, timeout=60) as resp, open(part, "wb") as f:  # noqa: S310
+                total = int(resp.headers.get("Content-Length", 0) or 0)
+                got = 0
+                while True:
+                    chunk = resp.read(1 << 20)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    got += len(chunk)
+                    if on_progress:
+                        on_progress(MODEL_NAME, got, total)
+            if total and got != total:
+                raise OSError(f"incomplete download: {got}/{total} bytes")
+            os.replace(part, dest)
+            return
+        except Exception as e:  # noqa: BLE001 - retry any transport error
+            last = e
+            part.unlink(missing_ok=True)
+            if attempt < retries:
+                time.sleep(2 * attempt)
+    raise OSError(f"failed to download {url}: {last}")
+
+
+def _preload_onnxruntime() -> None:
+    """Load the `onnxruntime` package's DLL before sherpa-onnx asks for it.
+
+    Windows ships an ancient ``C:\\Windows\\System32\\onnxruntime.dll`` that
+    shadows the one bundled with the Python package, because a bare-name
+    ``LoadLibrary("onnxruntime.dll")`` checks System32 before PATH. ``_sherpa_onnx``
+    then fails with "requested API version [28] ... only [1,17] are supported".
+    Preloading the package DLL by full path makes the later bare-name load
+    resolve to the compatible, already-loaded module. No-op off Windows.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        import onnxruntime
+
+        capi = Path(onnxruntime.__file__).parent / "capi"
+        dll = capi / "onnxruntime.dll"
+        if not dll.exists():
+            return
+        try:
+            os.add_dll_directory(str(capi))
+        except (AttributeError, OSError):
+            pass
+        ctypes.CDLL(str(dll))
+    except Exception:  # noqa: BLE001 - best effort; import will surface real errors
+        pass
+
 
 def _ensure_sherpa_runtime() -> None:
-    """Make sherpa_onnx load its onnxruntime dylib.
+    """Make sherpa_onnx load a compatible onnxruntime shared library.
 
-    The macOS wheel looks for libonnxruntime.dylib next to _sherpa_onnx.so; the
-    onnxruntime Python package ships it elsewhere. Symlink it if missing.
+    On Windows, preload the Python package's DLL (System32 shadows it). On macOS,
+    the wheel looks for libonnxruntime.dylib next to _sherpa_onnx.so; the
+    onnxruntime Python package ships it elsewhere, so symlink it if missing.
     """
+    _preload_onnxruntime()
     try:
         importlib.import_module("sherpa_onnx")
         return
@@ -49,26 +152,31 @@ def _ensure_sherpa_runtime() -> None:
 
 
 def ensure_model(cache_dir: Optional[Path] = None, on_progress=None) -> Path:
-    cache = (cache_dir or DEFAULT_CACHE / "sherpa") / MODEL_NAME
-    if (cache / "tokens.txt").exists():
-        return cache
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    archive = cache.parent / f"{MODEL_NAME}.tar.bz2"
-    with urllib.request.urlopen(MODEL_URL) as resp, open(archive, "wb") as f:  # noqa: S310
-        total = int(resp.headers.get("Content-Length", 0))
-        got = 0
-        while True:
-            chunk = resp.read(1 << 20)
-            if not chunk:
-                break
-            f.write(chunk)
-            got += len(chunk)
-            if on_progress:
-                on_progress(MODEL_NAME, got, total)
-    with tarfile.open(archive, "r:bz2") as tar:
-        tar.extractall(cache.parent)  # noqa: S202 - trusted model host
-    archive.unlink(missing_ok=True)
-    return cache
+    base = Path(cache_dir) if cache_dir else DEFAULT_CACHE / "sherpa"
+    cache = base / MODEL_NAME
+    with _download_lock:
+        if _model_complete(cache):
+            return cache
+        # A previous run may have left a partial extraction (this is what produced
+        # `EOFError: Compressed file ended before end-of-stream`). Start clean.
+        if cache.exists():
+            shutil.rmtree(cache, ignore_errors=True)
+        base.mkdir(parents=True, exist_ok=True)
+        archive = base / f"{MODEL_NAME}.tar.bz2"
+        tmpdir = Path(tempfile.mkdtemp(prefix=f".{MODEL_NAME}-", dir=str(base)))
+        _download(MODEL_URL, archive, on_progress)
+        try:
+            with tarfile.open(archive, "r:bz2") as tar:
+                _safe_extract(tar, tmpdir)
+            extracted = tmpdir / MODEL_NAME
+            src = extracted if extracted.is_dir() else tmpdir
+            shutil.move(str(src), str(cache))
+            if not _model_complete(cache):
+                raise OSError(f"model archive did not contain a complete {MODEL_NAME}")
+            return cache
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            archive.unlink(missing_ok=True)
 
 
 def _pick(model_dir: Path, candidates: list[str]) -> str:

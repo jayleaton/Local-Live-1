@@ -217,6 +217,16 @@ class JarvisService:
                     notes.append(label)
             except Exception as e:  # noqa: BLE001
                 notes.append(f"{label}:err({type(e).__name__})")
+        # Streaming ASR is lazy by default; loading it here means the first push
+        # of the mic button is instant (and the model download is visible) instead
+        # of racing a download inside the WebSocket handler.
+        if getattr(self.cfg.voice, "streaming", True) and getattr(self.cfg.voice, "streaming_backend", "sherpa") == "sherpa":
+            print("  loading streaming ASR (first run downloads the model)...")
+            try:
+                self.streaming_stt._load()
+                notes.append("streaming-asr")
+            except Exception as e:  # noqa: BLE001 - voice is optional
+                notes.append(f"streaming-asr:err({type(e).__name__}: {e})")
         print(f"  warmup: loaded {', '.join(notes) or 'nothing'} in {time.time() - t0:.1f}s")
 
     def get_settings(self) -> dict:
@@ -237,14 +247,31 @@ class JarvisService:
             "max_spoken_sentences": self.cfg.voice.max_spoken_sentences,
             "endpointing_ms": self.cfg.voice.endpointing_ms,
             "asr_backend": self.cfg.voice.streaming_backend,
+            "asr_backends": self._asr_backends(),
             "brain": self.harness.provider.name,
             "tools": sorted(t.name for t in self.harness.runtime.tools()),
             "servers": sorted(c.name for c in self.cfg.servers.values() if c.enabled),
         }
 
+    @staticmethod
+    def _asr_backends() -> list[dict]:
+        """Advertise the selectable speech-to-text backends and their availability."""
+        try:
+            from jarvis.stt.nemotron_server import find_binary
+
+            nemo_available = find_binary() is not None
+        except Exception:  # noqa: BLE001
+            nemo_available = False
+        return [
+            {"value": "sherpa", "label": "Sherpa Zipformer (fast, offline)", "available": True},
+            {"value": "nemotron", "label": "NVIDIA Nemotron 3.5 streaming", "available": nemo_available},
+        ]
+
     def apply_settings(self, data: dict) -> dict:
         if data.get("response_mode") in ("local", "api"):
             self.cfg.response_mode = data["response_mode"]
+        if data.get("asr_backend") in ("nemotron", "sherpa"):
+            self.cfg.voice.streaming_backend = data["asr_backend"]
         if data.get("local_model") and self.cfg.local is not None:
             self.cfg.local.model = data["local_model"]
         if data.get("api_model"):
@@ -279,6 +306,7 @@ class JarvisService:
         data.setdefault("model", {})["model"] = self.cfg.model.model
         data.setdefault("voice", {})["tts_voice"] = self.cfg.voice.tts_voice
         data["voice"]["tts_backend"] = getattr(self.cfg.voice, "tts_backend", "kokoro")
+        data["voice"]["streaming_backend"] = self.cfg.voice.streaming_backend
         data["voice"]["max_spoken_sentences"] = self.cfg.voice.max_spoken_sentences
         data["voice"]["endpointing_ms"] = self.cfg.voice.endpointing_ms
         try:
@@ -372,7 +400,15 @@ class JarvisService:
             import traceback
 
             stt = self.streaming_stt
-            stream = await asyncio.to_thread(stt.create_stream)
+            try:
+                stream = await asyncio.to_thread(stt.create_stream)
+            except Exception as e:  # noqa: BLE001 - report to the UI, don't kill the handler silently
+                traceback.print_exc()
+                try:
+                    await ws.send(json.dumps({"type": "error", "text": f"Speech model unavailable: {e}"}))
+                except Exception:
+                    pass
+                return
 
             async def finalize() -> None:
                 final = (await asyncio.to_thread(stt.text, stream)).strip()
@@ -503,13 +539,18 @@ class JarvisService:
                     for t in (t1, t2):
                         t.cancel()
 
-        backend = getattr(self.cfg.voice, "streaming_backend", "nemotron")
-        handler = nemotron_handler if backend == "nemotron" else sherpa_handler
+        async def _route(ws) -> None:
+            # Read the backend per connection so a Settings change applies to the
+            # next mic session without restarting the server.
+            if getattr(self.cfg.voice, "streaming_backend", "sherpa") == "nemotron":
+                await nemotron_handler(ws)
+            else:
+                await sherpa_handler(ws)
 
         async def _serve() -> None:
             import websockets
 
-            self._ws_server = await websockets.serve(handler, host, port, max_size=None)
+            self._ws_server = await websockets.serve(_route, host, port, max_size=None)
 
         self._runner.submit(_serve())
 
@@ -576,11 +617,15 @@ def _interface_ips() -> list[str]:
     import re
     import subprocess
 
+    if os.name == "nt":
+        cmd, pattern = ["ipconfig"], r"IPv4[^\d]*(\d+\.\d+\.\d+\.\d+)"
+    else:
+        cmd, pattern = ["ifconfig"], r"inet (\d+\.\d+\.\d+\.\d+)"
     try:
-        out = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=5).stdout
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=5).stdout
     except Exception:
         return []
-    return re.findall(r"inet (\d+\.\d+\.\d+\.\d+)", out)
+    return re.findall(pattern, out)
 
 
 def _urls(host: str, port: int, scheme: str = "https") -> list[str]:
@@ -598,14 +643,21 @@ def _urls(host: str, port: int, scheme: str = "https") -> list[str]:
     return urls
 
 
-def _ensure_cert(cert_dir) -> tuple[str, str]:
+def _ensure_cert(cert_dir) -> Optional[tuple[str, str]]:
     """Create a self-signed cert (SANs for localhost/tailscale/lan) if missing.
 
     getUserMedia requires a secure context, so plain HTTP over Tailscale can't
     access the mic. Self-signed HTTPS works once the browser warning is accepted.
+
+    Returns ``None`` when no certificate can be produced (e.g. ``openssl`` is not
+    installed on Windows); callers then fall back to plain HTTP.
     """
+    import shutil
     import subprocess
     from pathlib import Path
+
+    if shutil.which("openssl") is None:
+        return None
 
     cert_dir = Path(cert_dir)
     cert_dir.mkdir(parents=True, exist_ok=True)
@@ -626,15 +678,20 @@ def _ensure_cert(cert_dir) -> tuple[str, str]:
     for ip in _interface_ips():
         names.add(f"IP:{ip}")
     san = ",".join(sorted(names))
-    subprocess.run(
-        [
-            "openssl", "req", "-x509", "-newkey", "rsa:2048",
-            "-keyout", str(key), "-out", str(cert),
-            "-days", "825", "-nodes", "-subj", "/CN=jarvis",
-            "-addext", f"subjectAltName={san}",
-        ],
-        check=True, capture_output=True,
-    )
+    try:
+        subprocess.run(
+            [
+                "openssl", "req", "-x509", "-newkey", "rsa:2048",
+                "-keyout", str(key), "-out", str(cert),
+                "-days", "825", "-nodes", "-subj", "/CN=jarvis",
+                "-addext", f"subjectAltName={san}",
+            ],
+            check=True, capture_output=True,
+        )
+    except Exception:  # noqa: BLE001 - fall back to HTTP rather than crash
+        cert.unlink(missing_ok=True)
+        key.unlink(missing_ok=True)
+        return None
     return str(cert), str(key)
 
 
@@ -670,15 +727,18 @@ def run_server(
 
     scheme = "http"
     if https:
-        cert, key = _ensure_cert(cert_dir)
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(cert, key)
-        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
-        scheme = "https"
+        cert = _ensure_cert(cert_dir)
+        if cert is None:
+            print("  (openssl unavailable: serving HTTP — the mic works on localhost; use Tailscale for remote HTTPS)")
+        else:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(*cert)
+            httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+            scheme = "https"
 
     if chosen != port:
         print(f"Port {port} was busy; using {chosen} instead.")
-    print(f"Jarvis web UI (bound to all interfaces, {'HTTPS' if https else 'HTTP'}):")
+    print(f"Jarvis web UI (bound to all interfaces, {'HTTPS' if scheme == 'https' else 'HTTP'}):")
     for u in _urls(host, chosen, scheme):
         print("  ", u)
     print(f"  brain={service.harness.provider.name}  workers={list(cfg.agents)}")
@@ -703,7 +763,7 @@ def run_server(
             print(f"  streaming bridge on :{ws_port}")
         except Exception as e:  # noqa: BLE001
             print(f"  streaming unavailable ({type(e).__name__}: {e}); using VAD+Whisper")
-    if https:
+    if scheme == "https":
         print("  (self-signed cert: accept the browser warning once — the mic needs a secure context)")
     service.warmup()
     print("  Ctrl-C to stop.")

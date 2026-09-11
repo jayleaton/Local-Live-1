@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import time
 
-import numpy as np
 import pytest
 
+np = pytest.importorskip("numpy")
 pytest.importorskip("sounddevice")
 
 from jarvis.core.types import LLMResponse
