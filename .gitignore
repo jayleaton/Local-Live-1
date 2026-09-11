@@ -36,3 +36,6 @@ apps/desktop/release/
 .DS_Store
 .idea/
 .vscode/
+
+# Playwright CLI scratch
+.playwright-cli/
