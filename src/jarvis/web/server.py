@@ -269,6 +269,8 @@ class JarvisService:
             api_key="",
             timeout=600.0,
             name=f"llama.cpp:{repo.split('/')[-1]}",
+            # This template prefills <think>, so the stream must drop reasoning.
+            think_prefix=bool(template),
         )
 
     def _activate_brain(self, repo: str, filename: str = "") -> None:
