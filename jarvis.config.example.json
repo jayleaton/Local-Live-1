@@ -106,5 +106,6 @@
         "read_file"
       ]
     }
-  }
+  },
+  "response_mode": "local"
 }
