@@ -312,6 +312,15 @@ class JarvisService:
     def start_asr_job(self, kind: str, name: str = "", *, repo: str = "", size: int = 0, label: str = "") -> dict:
         if kind not in ("install", "pull"):
             return {"started": False, "error": f"unknown job '{kind}'"}
+        if kind == "pull":
+            # Never download a second copy: any installed revision counts.
+            try:
+                from jarvis.stt import nemo_models
+
+                if nemo_models.is_installed(repo or name, size):
+                    return {"started": False, "installed": True, "name": name}
+            except Exception:  # noqa: BLE001
+                pass
         with self._asr_lock:
             if self._asr_job.get("running"):
                 return {"started": False, "error": "a speech-model job is already running"}
@@ -561,7 +570,11 @@ class JarvisService:
                         json.dumps(
                             {
                                 "type": "session.update",
-                                "session": {"endpointing_ms": self.cfg.voice.endpointing_ms},
+                                "session": {
+                                    "sample_rate": 16000,
+                                    "automatic_punctuation": True,
+                                    "endpointing_ms": self.cfg.voice.endpointing_ms,
+                                },
                             }
                         )
                     )

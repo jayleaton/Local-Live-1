@@ -139,6 +139,8 @@ INDEX_HTML = r"""<!doctype html>
           </div>
         </div>
         <div class="tabpane" data-pane="voice">
+          <label>Microphone <select id="s-mic"></select></label>
+          <div id="mic-info" style="font-size:11px;color:var(--muted)"></div>
           <label>TTS engine <select id="s-tts-backend"><option value="chatterbox">Chatterbox (natural)</option><option value="kokoro">Kokoro (fast)</option></select></label>
           <label>Voice <select id="s-voice"></select></label>
           <label>Max spoken sentences <input id="s-cap" type="number" min="1" max="10" /></label>
@@ -173,6 +175,7 @@ let audioQueue=[],playing=false,currentAudio=null;
 // so a natural pause inside a sentence doesn't split it into several messages.
 let endpointMs=1200;
 let asrCatalog=null, asrPoll=null;
+let micDeviceId=''; try{ micDeviceId=localStorage.getItem('jarvis.micDeviceId')||''; }catch(e){}
 
 function state(s){ app.dataset.state=s; statusEl.textContent=LABELS[s]||s; const c=document.getElementById('caption'); if(c) c.textContent=LABELS[s]||s; }
 function view(v){ app.dataset.view=v; pop.hidden=(v==='none'); if(v!=='chat') app.dataset.full='false'; if(v==='input') quicktext.focus(); }
@@ -221,8 +224,9 @@ function startPCM(){ audioCtx=new (window.AudioContext||window.webkitAudioContex
   micSrc.connect(procNode); procNode.connect(muteGain); muteGain.connect(audioCtx.destination); }
 async function startMic(){ if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){ notice('Microphone needs a secure context (HTTPS). Open '+location.href.replace(/^http:/,'https:')+'.'); return; }
   state('connecting');
-  try{ micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}}); }
-  catch(e){ notice('Microphone unavailable: '+e.message); state('idle'); return; }
+  const base={echoCancellation:true,noiseSuppression:true,autoGainControl:true};
+  try{ micStream=await navigator.mediaDevices.getUserMedia({audio: micDeviceId?Object.assign({},base,{deviceId:{exact:micDeviceId}}):base}); }
+  catch(e){ if(micDeviceId){ try{ micStream=await navigator.mediaDevices.getUserMedia({audio:base}); }catch(e2){ notice('Microphone unavailable: '+e2.message); state('idle'); return; } } else { notice('Microphone unavailable: '+e.message); state('idle'); return; } }
   streaming=true; if(app.dataset.view==='none') view('chat');
   try{ ws=new WebSocket(WS_URL); ws.binaryType='arraybuffer'; ws.onopen=()=>{ state('listening'); startPCM(); }; ws.onmessage=onWs; ws.onerror=()=>{ notice('Voice connection failed — is the streaming service running?'); stopMic(); }; ws.onclose=()=>{ if(streaming){ notice('Voice connection closed.'); stopMic(); } }; }
   catch(e){ notice('Streaming unavailable: '+e.message); stopMic(); } }
@@ -236,13 +240,24 @@ document.querySelectorAll('[data-nav]').forEach(b=>b.onclick=()=>{ view(b.datase
 document.getElementById('btn-full').onclick=()=>{ app.dataset.full = app.dataset.full==='true'?'false':'true'; };
 composer.onsubmit=e=>{ e.preventDefault(); const t=input.value; input.value=''; sendText(t); };
 quickform.onsubmit=e=>{ e.preventDefault(); const t=quicktext.value; quicktext.value=''; sendText(t); };
-document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ app.dataset.view==='chat' ? view('menu') : view('none'); } });
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ if(streaming){ stopMic(); } else { app.dataset.view==='chat' ? view('menu') : view('none'); } } });
 document.addEventListener('click',e=>{ const v=app.dataset.view; if((v==='menu'||v==='input'||v==='settings') && !app.contains(e.target)) view('none'); });
 
 let settingsTab='brain';
-function showTab(name){ settingsTab=name||settingsTab; document.querySelectorAll('#settings-tabs .tab').forEach(b=>b.setAttribute('aria-selected', b.dataset.tab===settingsTab?'true':'false')); document.querySelectorAll('.tabpane').forEach(p=>p.classList.toggle('active', p.dataset.pane===settingsTab)); }
+function showTab(name){ settingsTab=name||settingsTab; document.querySelectorAll('#settings-tabs .tab').forEach(b=>b.setAttribute('aria-selected', b.dataset.tab===settingsTab?'true':'false')); document.querySelectorAll('.tabpane').forEach(p=>p.classList.toggle('active', p.dataset.pane===settingsTab)); if(settingsTab==='voice') loadMics(); }
+async function loadMics(){ const sel=document.getElementById('s-mic'); if(!sel) return;
+  let devs=[]; try{ devs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='audioinput'); }catch(e){}
+  if(devs.length && devs.every(d=>!d.label)){ try{ const st=await navigator.mediaDevices.getUserMedia({audio:true}); st.getTracks().forEach(t=>t.stop()); devs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='audioinput'); }catch(e){} }
+  sel.innerHTML=''; const add=(v,t)=>{const o=document.createElement('option');o.value=v;o.textContent=t;sel.appendChild(o);};
+  add('','System default');
+  devs.forEach((d,i)=>{ if(!d.deviceId||d.deviceId==='default'||d.deviceId==='communications') return; const o=document.createElement('option'); o.value=d.deviceId; o.textContent=d.label||('Microphone '+(i+1)); if(d.deviceId===micDeviceId) o.selected=true; sel.appendChild(o); });
+  const cur=devs.find(d=>d.deviceId===micDeviceId), info=document.getElementById('mic-info');
+  info.textContent = cur ? ('Using: '+cur.label) : (micDeviceId ? 'Saved microphone is unavailable — using system default.' : ''); }
+document.getElementById('s-mic').onchange=()=>{ micDeviceId=document.getElementById('s-mic').value; try{ localStorage.setItem('jarvis.micDeviceId', micDeviceId); }catch(e){} loadMics(); };
 document.querySelectorAll('#settings-tabs .tab').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
 window.jarvisOpenSettings=function(tab){ view('settings'); loadSettings(); if(tab) showTab(tab); };
+window.jarvisToggleMic=function(){ streaming?stopMic():startMic(); };
+window.jarvisCancel=function(){ if(streaming) stopMic(); };
 async function loadSettings(){ const d=await (await fetch('/settings')).json();
   document.getElementById('s-mode').value=d.response_mode;
   const lm=document.getElementById('s-local'); lm.innerHTML=''; (d.local_models||[]).forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m.split('/').pop();if(m===d.local_model)o.selected=true;lm.appendChild(o);});
@@ -258,7 +273,7 @@ async function loadAsr(){ try{ asrCatalog=await (await fetch('/asr/models')).jso
   sel.innerHTML=''; const add=(v,t)=>{const o=document.createElement('option');o.value=v;o.textContent=t;sel.appendChild(o);};
   add('sherpa','Sherpa Zipformer (built-in, offline)');
   const streaming=(d.models||[]).filter(m=>m.streaming);
-  if(d.runtime_installed){ streaming.forEach(m=>add('nemo:'+m.name, m.label+(m.size_mb?' — '+m.size_mb+' MB':''))); }
+  if(d.runtime_installed){ streaming.forEach(m=>add('nemo:'+m.name, m.label+(m.size_mb?' — '+m.size_mb+' MB':'')+(m.downloaded?' (installed)':''))); }
   else { add('nemo:__missing__','NVIDIA Nemotron — runtime not installed'); if(sel.lastChild) sel.lastChild.disabled=true; }
   const active=d.active||{};
   if(active.backend==='nemotron'&&active.nemo_model) { const want=streaming.find(m=>m.name===active.nemo_model||m.repo===active.nemo_model); if(want) sel.value='nemo:'+want.name; }
@@ -270,7 +285,7 @@ function updateAsrActions(){ const d=asrCatalog||{}, sel=document.getElementById
   install.style.display = d.runtime_installed?'none':'block';
   actions.style.display = (!d.runtime_installed||sel.indexOf('nemo:')===0)?'flex':'none';
   let need=false, m=null;
-  if(d.runtime_installed&&sel.indexOf('nemo:')===0){ m=(d.models||[]).find(x=>'nemo:'+x.name===sel); need=!!m&&!m.downloaded; }
+  if(d.runtime_installed&&sel.indexOf('nemo:')===0){ m=(d.models||[]).find(x=>'nemo:'+x.name===sel); need=!!m&&!m.downloaded&&!asrBusy; }
   dl.style.display = need?'block':'none';
   if(m) dl.textContent='Download '+m.label+(m.size_mb?' ('+m.size_mb+' MB)':'');
   if(d.runtime_installed&&sel.indexOf('nemo:')===0&&m&&m.downloaded) info.textContent='Active: '+m.label+' — downloaded.';
@@ -281,7 +296,11 @@ function asrControls(enabled){ document.getElementById('s-asr').disabled=!enable
 async function runAsrJob(url,body){ if(asrBusy) return; asrBusy=true; asrControls(false);
   const p=document.getElementById('asr-progress'), bar=document.getElementById('asr-bar'), fill=document.getElementById('asr-bar-fill'), wrap=document.getElementById('asr-progress-wrap');
   const finish=()=>{ asrBusy=false; asrControls(true); updateAsrActions(); };
-  try{ const r=await (await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})})).json(); if(r.error||!r.started){ wrap.style.display='block'; p.textContent=r.error||'could not start'; finish(); return; } }
+  try{ const r=await (await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})})).json();
+    if(r.error||!r.started){ wrap.style.display='block';
+      if(r.installed){ p.textContent='Already installed — no download needed.'; loadAsr(); setTimeout(()=>{ wrap.style.display='none'; }, 2500); }
+      else p.textContent=r.error||'could not start';
+      finish(); return; } }
   catch(e){ wrap.style.display='block'; p.textContent='error: '+e.message; finish(); return; }
   if(asrPoll) clearInterval(asrPoll);
   wrap.style.display='block'; bar.classList.remove('indet'); fill.style.background='var(--accent)'; fill.style.width='0%'; p.textContent='Starting…';

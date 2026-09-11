@@ -9,7 +9,7 @@
 // Settings cover internals: run-locally, port, remote URL, brain, model base URL/name,
 // API key. Works on macOS (on-device MLX), Windows/Linux (API or a local
 // OpenAI-compatible server such as llama.cpp/vLLM on an NVIDIA GPU).
-const { app, BrowserWindow, Tray, Menu, shell, nativeImage, systemPreferences, ipcMain } = require("electron");
+const { app, BrowserWindow, Tray, Menu, shell, nativeImage, systemPreferences, ipcMain, globalShortcut } = require("electron");
 const { spawn, spawnSync } = require("child_process");
 const http = require("http");
 const path = require("path");
@@ -47,7 +47,27 @@ function loadConfig() {
     apiKey: saved.apiKey || "",
     baseUrl: saved.baseUrl || "",
     model: saved.model || "",
+    // Global accelerator that starts/stops recording. Empty disables it.
+    hotkeyToggle: saved.hotkeyToggle !== undefined ? saved.hotkeyToggle : "Control+Alt+Space",
   };
+}
+
+function registerShortcuts() {
+  try {
+    globalShortcut.unregisterAll();
+  } catch {}
+  const acc = cfg && cfg.hotkeyToggle;
+  if (!acc) return;
+  try {
+    const ok = globalShortcut.register(acc, () => {
+      if (win && !win.isDestroyed()) {
+        win.webContents.executeJavaScript("window.jarvisToggleMic && window.jarvisToggleMic()").catch(() => {});
+      }
+    });
+    if (!ok) console.warn(`[shortcuts] could not register ${acc}`);
+  } catch (e) {
+    console.warn(`[shortcuts] ${acc} failed: ${e}`);
+  }
 }
 function saveConfig() {
   try {
@@ -288,7 +308,9 @@ function openSettings() {
     <label style="display:block;font-size:11px;color:#9aa0a6">Model name</label>
     <input id="model" placeholder="deepseek-flash" style="width:100%;box-sizing:border-box;background:#0f1216;border:1px solid #2a2e35;color:#e8eaed;border-radius:8px;padding:8px;margin:0 0 12px"/>
     <label style="display:block;font-size:11px;color:#9aa0a6">API key (optional; stored locally)</label>
-    <input id="key" type="password" style="width:100%;box-sizing:border-box;background:#0f1216;border:1px solid #2a2e35;color:#e8eaed;border-radius:8px;padding:8px;margin:0 0 14px"/>
+    <input id="key" type="password" style="width:100%;box-sizing:border-box;background:#0f1216;border:1px solid #2a2e35;color:#e8eaed;border-radius:8px;padding:8px;margin:0 0 12px"/>
+    <label style="display:block;font-size:11px;color:#9aa0a6">Toggle-recording hotkey (works anywhere; e.g. Control+Alt+Space, blank to disable)</label>
+    <input id="hotkey" placeholder="Control+Alt+Space" style="width:100%;box-sizing:border-box;background:#0f1216;border:1px solid #2a2e35;color:#e8eaed;border-radius:8px;padding:8px;margin:0 0 14px"/>
     <div style="display:flex;gap:8px">
       <button id="s" style="flex:1;padding:9px;border:1px solid #2a2e35;background:#232830;color:#e8eaed;border-radius:8px">Save &amp; restart</button>
       <button id="c" style="flex:1;padding:9px;border:1px solid #2a2e35;background:transparent;color:#e8eaed;border-radius:8px">Cancel</button>
@@ -298,8 +320,8 @@ function openSettings() {
     const cur=${cur};
     const g=id=>document.getElementById(id);
     g('run').checked=cur.runLocally; g('port').value=cur.port; g('url').value=cur.url||'';
-    g('brain').value=cur.brain; g('baseUrl').value=cur.baseUrl||''; g('model').value=cur.model||''; g('key').value=cur.apiKey||'';
-    g('s').onclick=()=>window.jarvisShell.saveSettings({runLocally:g('run').checked,port:parseInt(g('port').value||'8766',10),url:g('url').value.trim(),brain:g('brain').value,baseUrl:g('baseUrl').value.trim(),model:g('model').value.trim(),apiKey:g('key').value});
+    g('brain').value=cur.brain; g('baseUrl').value=cur.baseUrl||''; g('model').value=cur.model||''; g('key').value=cur.apiKey||''; g('hotkey').value=cur.hotkeyToggle||'';
+    g('s').onclick=()=>window.jarvisShell.saveSettings({runLocally:g('run').checked,port:parseInt(g('port').value||'8766',10),url:g('url').value.trim(),brain:g('brain').value,baseUrl:g('baseUrl').value.trim(),model:g('model').value.trim(),apiKey:g('key').value,hotkeyToggle:g('hotkey').value.trim()});
     g('c').onclick=()=>window.jarvisShell.close();
   </script></body></html>`;
   modal.loadURL(dataUrl(html));
@@ -361,6 +383,7 @@ ipcMain.on("jarvis-save-settings", async (_e, data) => {
   cfg = { ...cfg, ...data };
   saveConfig();
   refreshBackendUrl();
+  registerShortcuts();
   const caller = BrowserWindow.getFocusedWindow();
   if (caller && caller !== win) caller.close();
   stopBackend();
@@ -379,6 +402,7 @@ app.whenReady().then(async () => {
   }
   cfg = loadConfig();
   refreshBackendUrl();
+  registerShortcuts();
   buildMenu();
   createWindow();
   createTray();
@@ -389,5 +413,6 @@ app.whenReady().then(async () => {
 app.on("window-all-closed", (e) => e.preventDefault());
 app.on("before-quit", () => {
   quitting = true;
+  try { globalShortcut.unregisterAll(); } catch {}
   stopBackend();
 });
