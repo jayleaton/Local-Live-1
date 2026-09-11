@@ -345,9 +345,11 @@ function updateBrainActions(){ const d=brainCatalog||{}, sel=(document.getElemen
   const need=!!m&&!m.downloaded&&!asrBusy;
   dl.style.display=need?'block':'none'; actions.style.display=need?'flex':'none';
   if(m) dl.textContent='Download '+m.label+(m.size_mb?' ('+m.size_mb+' MB)':'');
-  if(m&&m.downloaded) info.textContent='Installed: '+m.label;
-  else if(m) info.textContent='Not downloaded yet — selecting it starts the download.';
-  else info.textContent=''; }
+  const rt=(d.runtime||{}), bits=[]; if(rt.kind==='llama.cpp'&&rt.backend) bits.push('GPU: '+rt.backend.toUpperCase()); if(d.available===false) bits.push(d.reason||'');
+  const suffix=bits.length?'  ·  '+bits.join(' · '):'';
+  if(m&&m.downloaded) info.textContent='Installed: '+m.label+' ('+m.runtime+')'+suffix;
+  else if(m) info.textContent='Not downloaded yet — selecting it starts the download.'+suffix;
+  else info.textContent=bits.join(' · '); }
 async function runBrainJob(body){ if(asrBusy) return; asrBusy=true; asrControls(false);
   const p=document.getElementById('brain-progress'), bar=document.getElementById('brain-bar'), fill=document.getElementById('brain-bar-fill'), wrap=document.getElementById('brain-progress-wrap');
   const finish=()=>{ asrBusy=false; asrControls(true); updateBrainActions(); };
@@ -369,8 +371,8 @@ async function runBrainJob(body){ if(asrBusy) return; asrBusy=true; asrControls(
     else { bar.classList.remove('indet'); fill.style.width='100%'; p.textContent='Download complete.'; clearInterval(asrPoll); asrPoll=null; finish(); loadBrain(); setTimeout(()=>{wrap.style.display='none';},3000); } }, 1000); }
 document.getElementById('s-local').onchange=()=>{ updateBrainActions(); saveSettings();
   const d=brainCatalog||{}, m=(d.models||[]).find(x=>x.repo===document.getElementById('s-local').value);
-  if(m&&!m.downloaded&&!asrBusy) runBrainJob({repo:m.repo,size:m.size,label:m.label}); };
-document.getElementById('s-brain-download').onclick=()=>{ const d=brainCatalog||{}, m=(d.models||[]).find(x=>x.repo===document.getElementById('s-local').value)||{}; runBrainJob({repo:m.repo,size:m.size,label:m.label}); };
+  if(m&&!m.downloaded&&!asrBusy) runBrainJob({repo:m.repo,file:m.file,size:m.size,label:m.label}); };
+document.getElementById('s-brain-download').onclick=()=>{ const d=brainCatalog||{}, m=(d.models||[]).find(x=>x.repo===document.getElementById('s-local').value)||{}; runBrainJob({repo:m.repo,file:m.file,size:m.size,label:m.label}); };
 document.getElementById('s-mode').onchange=()=>{ document.getElementById('s-local-row').style.display=(document.getElementById('s-mode').value==='local'&&localAvailable)?'block':'none'; };
 document.getElementById('s-tts-backend').onchange=()=>{ document.getElementById('s-voice').disabled=document.getElementById('s-tts-backend').value==='chatterbox'; };
 document.getElementById('s-save').onclick=saveSettings;

@@ -67,6 +67,12 @@ class JarvisService:
         self._runner.submit(self.harness.start())
         self._lock = threading.Lock()
         self._streaming = None
+        self._llama_proc = None
+        if cfg.response_mode != "api" and cfg.local is not None:
+            try:
+                self.harness.provider = self._make_provider()
+            except Exception:  # noqa: BLE001 - fall back to the placeholder provider
+                pass
         # One background speech-model job at a time (install runtime or pull model).
         self._asr_lock = threading.Lock()
         self._asr_job: dict = {
@@ -192,24 +198,84 @@ class JarvisService:
                     "cancelled": event.get("cancelled", False),
                 }
 
+    def _api_provider(self):
+        from jarvis.llm.openai_compat import OpenAICompatProvider
+
+        m = self.cfg.model
+        return OpenAICompatProvider(
+            m.base_url,
+            m.model,
+            api_key=m.resolved_api_key(),
+            timeout=m.timeout,
+            name=f"api:{m.model}",
+            extra_params=m.extra_params,
+            reasoning_effort=m.reasoning_effort,
+            strict_tools=m.strict_tools,
+        )
+
+    @staticmethod
+    def _free_port() -> int:
+        import socket
+
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        return port
+
+    def _brain_file(self, repo: str) -> str:
+        try:
+            from jarvis.llm import local_models
+
+            item = next((c for c in local_models.catalog() if c["repo"] == repo), None)
+            return item["file"] if item else ""
+        except Exception:  # noqa: BLE001
+            return ""
+
     def _make_provider(self):
         if self.cfg.response_mode == "api" or self.cfg.local is None:
-            from jarvis.llm.openai_compat import OpenAICompatProvider
+            return self._api_provider()
+        repo = self.cfg.local.model
+        filename = self._brain_file(repo)
+        from jarvis.llm import local_models
 
-            m = self.cfg.model
-            return OpenAICompatProvider(
-                m.base_url,
-                m.model,
-                api_key=m.resolved_api_key(),
-                timeout=m.timeout,
-                name=f"api:{m.model}",
-                extra_params=m.extra_params,
-                reasoning_effort=m.reasoning_effort,
-                strict_tools=m.strict_tools,
-            )
+        if local_models.runtime_for(repo, filename) == "llama.cpp":
+            return self._llama_provider(repo, filename) or self._api_provider()
         from jarvis.llm.mlx_local import MLXProvider
 
-        return MLXProvider(self.cfg.local.model, temperature=self.cfg.local.temperature, max_tokens=self.cfg.local.max_tokens)
+        return MLXProvider(repo, temperature=self.cfg.local.temperature, max_tokens=self.cfg.local.max_tokens)
+
+    def _llama_provider(self, repo: str, filename: str):
+        """Start (or reuse) llama-server for a GGUF model and point at it."""
+        from jarvis.llm import llama_runtime, local_models
+        from jarvis.llm.openai_compat import OpenAICompatProvider
+
+        path = local_models.model_path(repo, filename)
+        if not path:
+            return None
+        llama_runtime.stop(self._llama_proc)
+        port = self._free_port()
+        self._llama_proc = llama_runtime.start(path, port)
+        return OpenAICompatProvider(
+            f"http://127.0.0.1:{port}/v1",
+            "local",
+            api_key="",
+            timeout=600.0,
+            name=f"llama.cpp:{repo.split('/')[-1]}",
+        )
+
+    def _activate_brain(self, repo: str, filename: str = "") -> None:
+        """Make a downloaded model the active brain and load it."""
+        if self.cfg.local is None:
+            return
+        self.cfg.local.model = repo
+        self._persist()
+        if self.cfg.response_mode == "api":
+            return
+        if not filename:
+            filename = self._brain_file(repo)
+        self.harness.provider = self._make_provider()
+        self._load_provider_async()
 
     def warmup(self) -> None:
         """Load models now and keep them resident so the first turn isn't slow."""
@@ -270,11 +336,13 @@ class JarvisService:
 
     @staticmethod
     def _local_available() -> bool:
-        """On-device brain uses MLX, which only runs on Apple Silicon."""
-        import platform
-        import sys
+        """On-device brain: MLX on Apple Silicon, GGUF (llama.cpp) elsewhere."""
+        try:
+            import huggingface_hub  # noqa: F401
 
-        return sys.platform == "darwin" and platform.machine() in ("arm64", "aarch64")
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
     @staticmethod
     def _asr_backends() -> list[dict]:
@@ -306,17 +374,23 @@ class JarvisService:
         return info
 
     def brain_models(self) -> dict:
-        """Catalog of on-device (MLX) brain models plus the active one."""
+        """Platform-appropriate on-device brain models plus the active one."""
         active = self.cfg.local.model if self.cfg.local else None
         if not self._local_available():
-            return {"models": [], "available": False, "active": active, "reason": "MLX on-device models require Apple Silicon"}
+            return {"models": [], "available": False, "active": active, "reason": "huggingface_hub is not installed"}
         try:
             from jarvis.llm import local_models
 
             models = local_models.list_models()
+            runtime = {"kind": "mlx" if local_models.apple_silicon() else "llama.cpp"}
+            if not local_models.apple_silicon():
+                from jarvis.llm import llama_runtime
+
+                runtime["backend"] = llama_runtime.gpu_backend()
+                runtime["installed"] = llama_runtime.find_server() is not None
         except Exception as e:  # noqa: BLE001
             return {"models": [], "available": True, "error": f"{type(e).__name__}: {e}", "active": active}
-        return {"models": models, "available": True, "active": active}
+        return {"models": models, "available": True, "active": active, "runtime": runtime}
 
     def asr_status(self) -> dict:
         with self._asr_lock:
@@ -330,20 +404,22 @@ class JarvisService:
                 else:
                     from jarvis.llm import local_models
 
-                    done = local_models.cached_bytes(job["repo"])
+                    done = local_models.cached_bytes(job["repo"], job.get("file", ""))
                 job["bytes_done"] = done
                 job["bytes_total"] = job.get("size") or 0
             except Exception:  # noqa: BLE001 - progress is best-effort
                 pass
         return job
 
-    def start_brain_job(self, repo: str, *, size: int = 0, label: str = "") -> dict:
+    def start_brain_job(self, repo: str, *, file: str = "", size: int = 0, label: str = "") -> dict:
         if not repo:
             return {"started": False, "error": "missing model repo"}
         try:
             from jarvis.llm import local_models
 
-            if local_models.is_downloaded(repo, size):
+            if local_models.is_downloaded(repo, file, size):
+                # Already present: just make it the active model.
+                self._activate_brain(repo, file)
                 return {"started": False, "installed": True, "name": repo}
         except Exception:  # noqa: BLE001
             pass
@@ -355,6 +431,7 @@ class JarvisService:
                 "kind": "brain",
                 "name": repo,
                 "repo": repo,
+                "file": file,
                 "size": size,
                 "label": label,
                 "bytes_done": 0,
@@ -415,15 +492,12 @@ class JarvisService:
             elif kind == "brain":
                 from jarvis.llm import local_models
 
-                local_models.pull(name, progress)
+                with self._asr_lock:
+                    filename = self._asr_job.get("file", "")
+                local_models.pull(name, filename, progress)
+                self._activate_brain(name, filename)
             else:
                 nemo_models.install_runtime(progress)
-            if kind == "brain" and self.cfg.local is not None:
-                # Make the freshly downloaded model the active one and load it.
-                self.cfg.local.model = name
-                if self.cfg.response_mode == "local":
-                    self.harness.provider = self._make_provider()
-                    self._load_provider_async()
             with self._asr_lock:
                 self._asr_job.update(running=False, done=True, percent=100, message="done")
         except Exception as e:  # noqa: BLE001 - surfaced to the UI
@@ -466,12 +540,20 @@ class JarvisService:
         if data.get("endpointing_ms") is not None:
             self.cfg.voice.endpointing_ms = max(100, int(data["endpointing_ms"]))
         # Swap the response provider live, and warm a local brain in the background.
-        self.harness.provider = self._make_provider()
+        try:
+            self.harness.provider = self._make_provider()
+        except Exception as e:  # noqa: BLE001 - fall back to the API brain
+            self.harness.provider = self._api_provider()
+            self._brain_error = f"{type(e).__name__}: {e}"
         local = self.cfg.response_mode != "api" and self.cfg.local is not None
         self._persist()
         if local:
             self._load_provider_async()
-        return self.get_settings()
+        settings = self.get_settings()
+        if getattr(self, "_brain_error", None):
+            settings["brain_error"] = self._brain_error
+            self._brain_error = None
+        return settings
 
     def _persist(self) -> None:
         import json
@@ -575,6 +657,12 @@ class JarvisService:
         try:
             self._runner.submit(self.harness.stop())
         except Exception:
+            pass
+        try:
+            from jarvis.llm import llama_runtime
+
+            llama_runtime.stop(self._llama_proc)
+        except Exception:  # noqa: BLE001
             pass
 
     def start_ws(self, host: str, port: int) -> None:
@@ -809,6 +897,7 @@ def _handler_for(service: JarvisService, index_html: str):
                         200,
                         service.start_brain_job(
                             repo,
+                            file=payload.get("file") or "",
                             size=int(payload.get("size") or 0),
                             label=payload.get("label") or "",
                         ),

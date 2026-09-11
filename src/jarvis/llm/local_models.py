@@ -1,53 +1,89 @@
-"""On-device (MLX) model catalog and downloader.
+"""On-device brain model catalog and downloader.
 
-Mirrors the speech-model flow: list the candidate brain models, tell whether
-each is already in the Hugging Face cache, and download on demand with progress
-computed from the cache size. ``huggingface_hub`` is optional, so every import is
-guarded and callers degrade gracefully.
+Apple Silicon uses MLX; everything else uses GGUF via llama.cpp. The catalog is
+platform-aware, download status is read from the Hugging Face cache (size-aware,
+so partial downloads can resume), and downloads run through the shared model-job
+progress reporting.
 """
 
 from __future__ import annotations
 
+import platform
+import sys
 import threading
+from pathlib import Path
 from typing import Callable, Optional
 
-CATALOG = [
-    {"repo": "mlx-community/Qwen3.5-4B-MLX-4bit", "label": "Qwen3.5 4B (MLX 4-bit)"},
-    {"repo": "mlx-community/Qwen3.5-9B-MLX-4bit", "label": "Qwen3.5 9B (MLX 4-bit)"},
-    {"repo": "mlx-community/Qwen2.5-3B-Instruct-4bit", "label": "Qwen2.5 3B Instruct (MLX 4-bit)"},
+MLX_CATALOG = [
+    {"repo": "mlx-community/Qwen3.5-4B-MLX-4bit", "file": "", "label": "Qwen3.5 4B (MLX 4-bit)", "runtime": "mlx"},
+    {"repo": "mlx-community/Qwen3.5-9B-MLX-4bit", "file": "", "label": "Qwen3.5 9B (MLX 4-bit)", "runtime": "mlx"},
+    {"repo": "mlx-community/Qwen2.5-3B-Instruct-4bit", "file": "", "label": "Qwen2.5 3B Instruct (MLX 4-bit)", "runtime": "mlx"},
+]
+
+GGUF_CATALOG = [
+    {"repo": "unsloth/Qwen3.5-9B-GGUF", "file": "Qwen3.5-9B-Q4_K_M.gguf", "label": "Qwen3.5 9B (GGUF Q4_K_M)", "runtime": "llama.cpp"},
+    {"repo": "unsloth/Qwen3.5-4B-GGUF", "file": "Qwen3.5-4B-Q4_K_M.gguf", "label": "Qwen3.5 4B (GGUF Q4_K_M)", "runtime": "llama.cpp"},
 ]
 
 _sizes: dict[str, int] = {}
 _size_lock = threading.Lock()
 
 
-def _label(repo: str) -> str:
-    for item in CATALOG:
+def apple_silicon() -> bool:
+    return sys.platform == "darwin" and platform.machine().lower() in ("arm64", "aarch64")
+
+
+def catalog() -> list[dict]:
+    return MLX_CATALOG if apple_silicon() else GGUF_CATALOG
+
+
+def _find(repo: str) -> Optional[dict]:
+    for item in MLX_CATALOG + GGUF_CATALOG:
         if item["repo"] == repo:
-            return item["label"]
-    return repo.split("/")[-1]
+            return item
+    return None
 
 
-def total_size(repo: str) -> int:
-    """Total bytes of the repo on the Hub (cached in memory; 0 when offline)."""
+def runtime_for(repo: str, filename: str = "") -> str:
+    item = _find(repo)
+    return item["runtime"] if item else ("llama.cpp" if filename else "mlx")
+
+
+def _hub():
+    from huggingface_hub import HfApi
+
+    return HfApi()
+
+
+def file_size(repo: str, filename: str = "") -> int:
+    """Bytes of the repo (whole repo for MLX, one file for GGUF); 0 when offline."""
+    key = f"{repo}:{filename}"
     with _size_lock:
-        if repo in _sizes:
-            return _sizes[repo]
+        if key in _sizes:
+            return _sizes[key]
     size = 0
     try:
-        from huggingface_hub import HfApi
-
-        info = HfApi().model_info(repo, files_metadata=True)
-        size = sum(int(f.size or 0) for f in (info.siblings or []))
-    except Exception:  # noqa: BLE001 - offline / gated repo
+        info = _hub().model_info(repo, files_metadata=True)
+        files = list(info.siblings or [])
+        if filename:
+            match = next((f for f in files if getattr(f, "rfilename", "") == filename), None)
+            size = int(getattr(match, "size", 0) or 0) if match else 0
+        else:
+            size = sum(int(getattr(f, "size", 0) or 0) for f in files)
+    except Exception:  # noqa: BLE001 - offline / gated
         size = 0
     with _size_lock:
-        _sizes[repo] = size
+        _sizes[key] = size
     return size
 
 
-def cached_bytes(repo: str) -> int:
+def cached_bytes(repo: str, filename: str = "") -> int:
     try:
+        if filename:
+            from huggingface_hub import try_to_load_from_cache
+
+            path = try_to_load_from_cache(repo_id=repo, filename=filename)
+            return Path(path).stat().st_size if isinstance(path, str) and Path(path).exists() else 0
         from huggingface_hub import scan_cache_dir
 
         total = 0
@@ -60,11 +96,11 @@ def cached_bytes(repo: str) -> int:
         return 0
 
 
-def is_downloaded(repo: str, size: int = 0) -> bool:
-    total = cached_bytes(repo)
+def is_downloaded(repo: str, filename: str = "", size: int = 0) -> bool:
+    total = cached_bytes(repo, filename)
     if total == 0:
         return False
-    expected = size or total_size(repo)
+    expected = size or file_size(repo, filename)
     if expected:
         return total >= int(expected * 0.98)
     return True
@@ -72,27 +108,49 @@ def is_downloaded(repo: str, size: int = 0) -> bool:
 
 def list_models() -> list[dict]:
     out = []
-    for item in CATALOG:
-        repo = item["repo"]
-        size = total_size(repo)
+    for item in catalog():
+        repo, filename = item["repo"], item["file"]
+        size = file_size(repo, filename)
         out.append(
             {
                 "repo": repo,
                 "name": repo,
+                "file": filename,
                 "label": item["label"],
+                "runtime": item["runtime"],
                 "size": size,
                 "size_mb": round(size / 1e6, 1) if size else None,
-                "downloaded": is_downloaded(repo, size),
+                "downloaded": is_downloaded(repo, filename, size),
             }
         )
     return out
 
 
-def pull(repo: str, on_progress: Optional[Callable[[str], None]] = None, token: Optional[str] = None) -> None:
-    from huggingface_hub import snapshot_download
-
+def pull(repo: str, filename: str = "", on_progress: Optional[Callable[[str], None]] = None, token: Optional[str] = None) -> None:
     if on_progress:
-        on_progress(f"downloading {repo}")
-    snapshot_download(repo_id=repo, token=token)
+        on_progress(f"downloading {filename or repo}")
+    if filename:
+        from huggingface_hub import hf_hub_download
+
+        hf_hub_download(repo_id=repo, filename=filename, token=token)
+    else:
+        from huggingface_hub import snapshot_download
+
+        snapshot_download(repo_id=repo, token=token)
     if on_progress:
         on_progress("done")
+
+
+def model_path(repo: str, filename: str = "") -> Optional[str]:
+    """Local path of a downloaded model (GGUF file, or the MLX snapshot dir)."""
+    try:
+        if filename:
+            from huggingface_hub import try_to_load_from_cache
+
+            path = try_to_load_from_cache(repo_id=repo, filename=filename)
+            return path if isinstance(path, str) and Path(path).exists() else None
+        from huggingface_hub import snapshot_download
+
+        return snapshot_download(repo_id=repo, local_files_only=True)
+    except Exception:  # noqa: BLE001
+        return None
