@@ -53,16 +53,20 @@ uv run python -m jarvis serve                       # web UI at http://127.0.0.1
 
 Open the UI, press the mic, and talk — it finalizes when you pause and speaks the reply.
 
-### Desktop (Electron)
+### Desktop (Electron, all-in-one)
+
+The desktop app **starts the backend itself** (no separate `jarvis serve` needed),
+keeps models resident, and stops the backend on quit. Internals live in **Settings**.
 
 ```sh
 cd apps/desktop && npm install
-npm start                                           # loads http://127.0.0.1:8766
-JARVIS_URL="https://<machine>.<tailnet>.ts.net:8443" npm start   # or point at a remote host
+npm start                                           # starts the backend + loads the UI
 ```
 
-The Electron window is a **client**: closing it does not stop the backend, so remote
-browser sessions keep working. Run the backend independently.
+**Local-Live-1 → Settings…** covers: run backend locally (on/off), port, backend URL
+(for a remote host, e.g. Tailscale HTTPS), brain (on-device/API), and an optional API
+key (stored locally, never in the repo). Closing the window hides to the tray; use
+**Quit** to stop the app and its backend.
 
 ### Remote access (Tailscale, private)
 

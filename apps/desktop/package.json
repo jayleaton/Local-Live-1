@@ -2,7 +2,8 @@
   "name": "@jarvis/desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Local-Live-1 desktop shell (Electron) for the local Jarvis voice agent UI",
+  "description": "Local-Live-1 desktop app (Electron): all-in-one client + local backend manager",
+  "author": "Local-Live-1 contributors",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -16,13 +17,23 @@
     "appId": "ai.jarvis.desktop",
     "productName": "Local-Live-1",
     "files": ["main.js", "preload.js"],
+    "extraResources": [
+      { "from": "bin", "to": "backend/bin" },
+      { "from": "../../src", "to": "backend/src" },
+      { "from": "../../servers", "to": "backend/servers" },
+      { "from": "../../scripts", "to": "backend/scripts" },
+      { "from": "../../pyproject.toml", "to": "backend/pyproject.toml" },
+      { "from": "../../uv.lock", "to": "backend/uv.lock" },
+      { "from": "../../jarvis.config.example.json", "to": "backend/jarvis.config.example.json" }
+    ],
     "mac": {
       "category": "public.app-category.productivity",
+      "target": ["dmg", "zip"],
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Local-Live-1 uses the microphone for voice input."
       }
     },
     "linux": { "target": "AppImage" },
-    "win": { "target": "nsis" }
+    "win": { "target": ["nsis", "zip"] }
   }
 }

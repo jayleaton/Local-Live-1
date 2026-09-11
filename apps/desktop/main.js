@@ -1,47 +1,81 @@
-// Local-Live-1 desktop shell.
+// Local-Live-1 desktop app.
 //
-// A thin CLIENT: it loads the UI served by the backend and adds a window/tray.
-// It owns no voice/models/tools. If the backend is local and not running, it
-// starts one (detached) so models are warm; closing the window must NOT stop the
-// service or remote sessions. On Windows/Linux, point it at a remote backend
-// (Tailscale URL) via the "Backend URL…" menu.
+// All-in-one: the app starts the backend itself (bundled runtime if present, else
+// the dev venv, else `uv`) and stops it when the app quits. The models load at
+// backend startup and stay resident. Remote access can still be enabled, and
+// internals (port, brain, API key) live in Settings.
 const { app, BrowserWindow, Tray, Menu, shell, nativeImage, systemPreferences, ipcMain } = require("electron");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const http = require("http");
 const path = require("path");
 const fs = require("fs");
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const isWin = process.platform === "win32";
+const isMac = process.platform === "darwin";
 
-function configPath() {
-  return path.join(app.getPath("userData"), "config.json");
-}
-function loadConfig() {
-  try {
-    return JSON.parse(fs.readFileSync(configPath(), "utf8"));
-  } catch {
-    return {};
-  }
-}
-function saveConfig(patch) {
-  const next = { ...loadConfig(), ...patch };
-  try {
-    fs.mkdirSync(path.dirname(configPath()), { recursive: true });
-    fs.writeFileSync(configPath(), JSON.stringify(next, null, 2));
-  } catch {}
-  return next;
-}
-
-let backendUrl = process.env.JARVIS_URL || loadConfig().url || "http://127.0.0.1:8766";
+let cfg = null; // { runLocally, port, url, brain, apiKey }
+let backendUrl = "";
+let backendProc = null;
+let startedByUs = false;
 let win = null;
 let tray = null;
 let quitting = false;
 
-function localPort() {
-  const m = backendUrl.match(/^https?:\/\/(127\.0\.0\.1|localhost):(\d+)/);
-  return m ? m[2] : null;
+// ---- config ---------------------------------------------------------------
+
+function userConfigPath() {
+  return path.join(app.getPath("userData"), "config.json");
 }
+function backendConfigPath() {
+  return path.join(app.getPath("userData"), "jarvis.config.json");
+}
+function loadConfig() {
+  let saved = {};
+  try {
+    saved = JSON.parse(fs.readFileSync(userConfigPath(), "utf8"));
+  } catch {}
+  return {
+    runLocally: process.env.JARVIS_URL ? false : saved.runLocally !== false,
+    port: saved.port || 8766,
+    url: process.env.JARVIS_URL || saved.url || "",
+    brain: saved.brain || (isMac ? "local" : "api"),
+    apiKey: saved.apiKey || "",
+  };
+}
+function saveConfig() {
+  try {
+    fs.mkdirSync(path.dirname(userConfigPath()), { recursive: true });
+    fs.writeFileSync(userConfigPath(), JSON.stringify(cfg, null, 2));
+  } catch {}
+}
+function refreshBackendUrl() {
+  backendUrl = cfg.runLocally ? `http://127.0.0.1:${cfg.port}` : cfg.url || `http://127.0.0.1:${cfg.port}`;
+}
+function backendDir() {
+  return app.isPackaged ? path.join(process.resourcesPath, "backend") : REPO_ROOT;
+}
+
+function writeBackendConfig() {
+  const bd = backendDir();
+  let base = {};
+  try {
+    base = JSON.parse(fs.readFileSync(path.join(bd, "jarvis.config.example.json"), "utf8"));
+  } catch {
+    base = {};
+  }
+  base.response_mode = cfg.brain;
+  if (cfg.apiKey) {
+    base.model = base.model || {};
+    base.model.api_key = cfg.apiKey;
+    if (base.agents && base.agents.worker) base.agents.worker.api_key = cfg.apiKey;
+  }
+  try {
+    fs.writeFileSync(backendConfigPath(), JSON.stringify(base, null, 2));
+  } catch {}
+}
+
+// ---- backend process ------------------------------------------------------
 
 function reachable(url, timeoutMs = 1500) {
   return new Promise((resolve) => {
@@ -59,27 +93,71 @@ function reachable(url, timeoutMs = 1500) {
   });
 }
 
-// Start the backend if it's local and not already running, so models stay warm.
-async function ensureBackend() {
-  const port = localPort();
-  if (!port) return; // remote host: don't manage its lifecycle
-  if (await reachable(backendUrl)) return;
-  const py = isWin
-    ? path.join(REPO_ROOT, ".venv", "Scripts", "python.exe")
-    : path.join(REPO_ROOT, ".venv", "bin", "python");
-  if (!fs.existsSync(py)) return; // packaged/remote client: rely on JARVIS_URL
-  const child = spawn(
-    py,
-    ["-m", "jarvis", "serve", "--host", "127.0.0.1", "--port", port, "--http", "--no-open"],
-    { cwd: REPO_ROOT, detached: true, stdio: "ignore" }
-  );
-  child.unref();
-  const deadline = Date.now() + 120000;
+function resolveBackend() {
+  const bd = backendDir();
+  const venvPy = isWin ? path.join(bd, ".venv", "Scripts", "python.exe") : path.join(bd, ".venv", "bin", "python");
+  const uvBin = isWin ? path.join(bd, "bin", "uv.exe") : path.join(bd, "bin", "uv");
+  const devPy = isWin ? path.join(REPO_ROOT, ".venv", "Scripts", "python.exe") : path.join(REPO_ROOT, ".venv", "bin", "python");
+  const serve = ["-m", "jarvis", "serve", "--host", "127.0.0.1", "--port", String(cfg.port), "--http", "--no-open"];
+  const extras = isMac ? ["--extra", "voice", "--extra", "local"] : ["--extra", "voice"];
+  if (fs.existsSync(venvPy)) return { cmd: venvPy, args: serve, env: { PYTHONPATH: path.join(bd, "src") } };
+  if (fs.existsSync(uvBin)) return { cmd: uvBin, args: ["run", ...extras, "--project", bd, "python", ...serve], env: {} };
+  if (fs.existsSync(devPy)) return { cmd: devPy, args: serve, env: { PYTHONPATH: path.join(REPO_ROOT, "src") } };
+  return { cmd: "uv", args: ["run", ...extras, "--project", bd, "python", ...serve], env: {} };
+}
+
+async function startBackend() {
+  if (!cfg.runLocally) return true;
+  if (await reachable(backendUrl)) return true;
+  if (!fs.existsSync(backendDir())) return false;
+  writeBackendConfig();
+  const { cmd, args, env } = resolveBackend();
+  try {
+    backendProc = spawn(cmd, args, {
+      cwd: backendDir(),
+      env: {
+        ...process.env,
+        ...env,
+        JARVIS_CONFIG: backendConfigPath(),
+        // Keep any uv-created environment/cache writable (app resources may be read-only).
+        UV_PROJECT_ENVIRONMENT: path.join(app.getPath("userData"), "backend-venv"),
+        UV_CACHE_DIR: path.join(app.getPath("userData"), "uv-cache"),
+      },
+      stdio: "ignore",
+      detached: false,
+    });
+    startedByUs = true;
+  } catch {
+    return false;
+  }
+  backendProc.on("exit", () => {
+    backendProc = null;
+  });
+  const deadline = Date.now() + 180000;
   while (Date.now() < deadline) {
-    if (await reachable(backendUrl)) return;
+    if (await reachable(backendUrl)) return true;
+    if (!backendProc) return false; // process died
     await new Promise((r) => setTimeout(r, 1500));
   }
+  return false;
 }
+
+function stopBackend() {
+  if (!startedByUs || !backendProc) return;
+  try {
+    if (isWin) spawnSync("taskkill", ["/pid", String(backendProc.pid), "/T", "/F"]);
+    else backendProc.kill("SIGTERM");
+  } catch {}
+  backendProc = null;
+  startedByUs = false;
+}
+
+async function restartBackend() {
+  stopBackend();
+  if (win && !win.isDestroyed()) await startBackend();
+}
+
+// ---- window / UI ----------------------------------------------------------
 
 function loadApp() {
   win.loadURL(backendUrl).catch(() => {
@@ -87,8 +165,8 @@ function loadApp() {
       "data:text/html," +
         encodeURIComponent(
           `<body style="font:14px system-ui;padding:24px;background:#111315;color:#e8eaed">` +
-            `<h3>Can't reach Local-Live-1</h3><p>No backend at <code>${backendUrl}</code>.</p>` +
-            `<p>Use the menu <b>Local-Live-1 &rarr; Backend URL…</b> to point at your host, or start the backend.</p></body>`
+            `<h3>Local-Live-1 couldn't start</h3><p>No backend at <code>${backendUrl}</code>.</p>` +
+            `<p>Open <b>Local-Live-1 &rarr; Settings…</b> to set the backend URL, or ensure a Python/uv runtime is available.</p></body>`
         )
     );
   });
@@ -103,13 +181,8 @@ function createWindow() {
     show: false,
     title: "Local-Live-1",
     backgroundColor: "#111315",
-    webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
+    webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false },
   });
-
   loadApp();
   win.once("ready-to-show", () => win.show());
   win.on("close", (e) => {
@@ -132,30 +205,40 @@ function showWindow() {
   }
 }
 
-function openUrlModal() {
+function openSettings() {
   const modal = new BrowserWindow({
-    width: 460,
-    height: 190,
+    width: 480,
+    height: 430,
     modal: true,
     parent: win || undefined,
     resizable: false,
-    title: "Backend URL",
+    title: "Settings",
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true },
   });
-  const html = `<!doctype html><html><body style="margin:0;font:14px -apple-system,system-ui;background:#17191d">
-  <div style="padding:16px;background:#17191d;color:#e8eaed;height:100vh;box-sizing:border-box">
-    <label style="display:block;font-size:12px;color:#9aa0a6;margin-bottom:6px">Backend URL</label>
-    <input id="u" style="width:100%;box-sizing:border-box;background:#0f1216;border:1px solid #2a2e35;color:#e8eaed;border-radius:8px;padding:9px" value="${backendUrl}"/>
-    <div style="margin-top:12px;display:flex;gap:8px">
-      <button id="s" style="flex:1;padding:8px;border:1px solid #2a2e35;background:#232830;color:#e8eaed;border-radius:8px">Save</button>
-      <button id="c" style="flex:1;padding:8px;border:1px solid #2a2e35;background:transparent;color:#e8eaed;border-radius:8px">Cancel</button>
+  const prefill = JSON.stringify(cfg);
+  const html = `<!doctype html><html><body style="margin:0;font:13px -apple-system,system-ui;background:#17191d">
+  <div style="padding:16px;color:#e8eaed;height:100vh;box-sizing:border-box;overflow:auto">
+    <label style="display:flex;gap:8px;align-items:center;margin-bottom:12px"><input id="run" type="checkbox"/> Run the backend on this machine (all-in-one)</label>
+    <label style="display:block;font-size:11px;color:#9aa0a6;margin-bottom:4px">Port</label>
+    <input id="port" style="width:100%;box-sizing:border-box;background:#0f1216;border:1px solid #2a2e35;color:#e8eaed;border-radius:8px;padding:8px;margin-bottom:12px"/>
+    <label style="display:block;font-size:11px;color:#9aa0a6;margin-bottom:4px">Backend URL (when not running locally, e.g. Tailscale HTTPS)</label>
+    <input id="url" style="width:100%;box-sizing:border-box;background:#0f1216;border:1px solid #2a2e35;color:#e8eaed;border-radius:8px;padding:8px;margin-bottom:12px"/>
+    <label style="display:block;font-size:11px;color:#9aa0a6;margin-bottom:4px">Brain</label>
+    <select id="brain" style="width:100%;box-sizing:border-box;background:#0f1216;border:1px solid #2a2e35;color:#e8eaed;border-radius:8px;padding:8px;margin-bottom:12px">
+      <option value="local">On-device (Apple Silicon)</option><option value="api">API</option></select>
+    <label style="display:block;font-size:11px;color:#9aa0a6;margin-bottom:4px">API key (optional; stored locally)</label>
+    <input id="key" type="password" style="width:100%;box-sizing:border-box;background:#0f1216;border:1px solid #2a2e35;color:#e8eaed;border-radius:8px;padding:8px;margin-bottom:14px"/>
+    <div style="display:flex;gap:8px">
+      <button id="s" style="flex:1;padding:9px;border:1px solid #2a2e35;background:#232830;color:#e8eaed;border-radius:8px">Save &amp; restart</button>
+      <button id="c" style="flex:1;padding:9px;border:1px solid #2a2e35;background:transparent;color:#e8eaed;border-radius:8px">Cancel</button>
     </div>
-    <p style="color:#9aa0a6;font-size:12px;margin:10px 0 0">e.g. https://&lt;machine&gt;.&lt;tailnet&gt;.ts.net:8443</p>
   </div>
   <script>
-    const u=document.getElementById('u');
-    document.getElementById('s').onclick=()=>window.jarvisShell && window.jarvisShell.setUrl(u.value);
-    document.getElementById('c').onclick=()=>window.jarvisShell && window.jarvisShell.close();
+    const cur=${prefill};
+    const run=document.getElementById('run'), port=document.getElementById('port'), url=document.getElementById('url'), brain=document.getElementById('brain'), key=document.getElementById('key');
+    run.checked=cur.runLocally; port.value=cur.port; url.value=cur.url||''; brain.value=cur.brain; key.value=cur.apiKey||'';
+    document.getElementById('s').onclick=()=>window.jarvisShell.saveSettings({runLocally:run.checked,port:parseInt(port.value||'8766',10),url:url.value.trim(),brain:brain.value,apiKey:key.value});
+    document.getElementById('c').onclick=()=>window.jarvisShell.close();
   </script></body></html>`;
   modal.loadURL("data:text/html," + encodeURIComponent(html));
 }
@@ -166,7 +249,7 @@ function buildMenu() {
       {
         label: "Local-Live-1",
         submenu: [
-          { label: "Backend URL…", click: openUrlModal },
+          { label: "Settings…", click: openSettings },
           { label: "Reload", click: () => win && win.reload() },
           { type: "separator" },
           { role: "quit" },
@@ -184,7 +267,7 @@ function createTray() {
     tray.setContextMenu(
       Menu.buildFromTemplate([
         { label: "Show Local-Live-1", click: showWindow },
-        { label: "Backend URL…", click: openUrlModal },
+        { label: "Settings…", click: openSettings },
         { label: "Reload", click: () => win && win.reload() },
         { type: "separator" },
         { label: "Quit", click: () => { quitting = true; app.quit(); } },
@@ -194,13 +277,13 @@ function createTray() {
   } catch {}
 }
 
-ipcMain.on("jarvis-set-url", (_e, url) => {
-  if (typeof url === "string" && url.trim()) {
-    backendUrl = url.trim();
-    saveConfig({ url: backendUrl });
-  }
+ipcMain.on("jarvis-save-settings", async (_e, data) => {
+  cfg = { ...cfg, ...data };
+  saveConfig();
+  refreshBackendUrl();
   const caller = BrowserWindow.getFocusedWindow();
   if (caller && caller !== win) caller.close();
+  await restartBackend();
   if (win && !win.isDestroyed()) loadApp();
 });
 ipcMain.on("jarvis-close-modal", () => {
@@ -209,12 +292,17 @@ ipcMain.on("jarvis-close-modal", () => {
 });
 
 app.whenReady().then(async () => {
-  if (process.platform === "darwin") {
+  if (isMac) {
     try {
       await systemPreferences.askForMediaAccess("microphone");
     } catch {}
   }
-  await ensureBackend();
+  cfg = loadConfig();
+  refreshBackendUrl();
+  const ok = await startBackend();
+  if (!ok && cfg.runLocally) {
+    // leave backendUrl as-is; loadApp shows the guidance page
+  }
   buildMenu();
   createWindow();
   createTray();
@@ -224,4 +312,5 @@ app.whenReady().then(async () => {
 app.on("window-all-closed", (e) => e.preventDefault());
 app.on("before-quit", () => {
   quitting = true;
+  stopBackend();
 });

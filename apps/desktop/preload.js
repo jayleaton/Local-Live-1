@@ -1,9 +1,8 @@
-// Minimal preload. The UI is the same page the browser gets. We expose only the
-// small shell capabilities (set/clear backend URL) used by the app's own modal.
+// Preload for the UI and the app's own Settings modal.
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("jarvisShell", {
   desktop: true,
-  setUrl: (url) => ipcRenderer.send("jarvis-set-url", String(url || "")),
+  saveSettings: (data) => ipcRenderer.send("jarvis-save-settings", data || {}),
   close: () => ipcRenderer.send("jarvis-close-modal"),
 });

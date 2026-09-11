@@ -1,0 +1,1 @@
+# Bundled runtime binaries (e.g. `uv`) are staged here by CI before packaging.

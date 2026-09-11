@@ -1,0 +1,71 @@
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Bundle `uv` so the packaged app can create its own backend environment.
+      - name: Stage bundled uv
+        shell: bash
+        run: |
+          mkdir -p apps/desktop/bin
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp "$(command -v uv)" apps/desktop/bin/uv.exe
+          else
+            cp "$(command -v uv)" apps/desktop/bin/uv
+          fi
+          ls -l apps/desktop/bin
+
+      - name: Install desktop deps
+        working-directory: apps/desktop
+        run: npm install
+
+      - name: Build installers
+        working-directory: apps/desktop
+        run: npx electron-builder --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-live-1-${{ matrix.os }}
+          path: |
+            apps/desktop/dist/*.dmg
+            apps/desktop/dist/*.zip
+            apps/desktop/dist/*.exe
+            apps/desktop/dist/*.AppImage
+          if-no-files-found: ignore
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            apps/desktop/dist/*.dmg
+            apps/desktop/dist/*.zip
+            apps/desktop/dist/*.exe
+            apps/desktop/dist/*.AppImage
+          fail_on_unmatched_files: false

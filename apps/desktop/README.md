@@ -1,32 +1,49 @@
-# Jarvis desktop (Electron)
+# Local-Live-1 desktop (Electron)
 
-A thin shell that loads the UI served by the Jarvis backend. It is a **client**:
-closing the window (or quitting the app) does **not** stop the backend, so remote
-browser sessions keep working. The backend runs separately on the host.
+The **all-in-one** desktop app. It starts the backend (Python) itself, waits for it,
+and loads the UI; the models load at backend startup and stay resident. Quitting the
+app stops the backend it started. Closing the window hides to the tray (the app and
+backend keep running) — use **Quit** to stop everything.
 
-## Run
+## Run (dev)
 
 ```sh
-cd apps/desktop
-npm install            # installs electron + electron-builder (network, large)
-npm start              # loads JARVIS_URL, default http://127.0.0.1:8766
-
-# point at a remote host (e.g. over Tailscale)
-JARVIS_URL="https://<machine>.<tailnet>.ts.net:8443" npm start
+cd apps/desktop && npm install
+npm start
 ```
+
+On launch it resolves a backend in this order:
+1. a bundled runtime (`resources/backend/.venv` — packaged builds),
+2. the bundled **`uv`** (`apps/desktop/bin/uv`, staged by CI) → `uv run --extra voice …`,
+3. the repo dev venv (`.venv`).
+
+It writes its backend config to the app's user-data dir and starts
+`python -m jarvis serve` on the configured port.
+
+## Settings
+
+**Local-Live-1 → Settings…** (also in the tray):
+
+- **Run the backend on this machine** (all-in-one) — on/off.
+- **Port** — local backend port.
+- **Backend URL** — used when not running locally (e.g. a Tailscale HTTPS URL).
+- **Brain** — on-device (Apple Silicon) or API.
+- **API key** — optional, stored locally in the app's user-data (never in the repo).
 
 ## Package
 
 ```sh
-npm run dist           # electron-builder → release/ (per OS)
+npm run dist            # dmg/zip (macOS), nsis/zip (Windows), AppImage (Linux)
 ```
+
+For all-in-one installers with the backend bundled, use CI
+(`.github/workflows/release.yml`): push a `v*` tag and it builds macOS + Windows and
+attaches artifacts to the GitHub Release.
 
 ## Notes
 
-- The window close button hides to the tray by design (`main.js`), so the app can keep
-  running while the host does. Use **Quit** to exit the shell.
-- Over Tailscale, use the **HTTPS** URL; the browser/Electron needs a secure context for
-  `getUserMedia` (microphone).
-- No origins are baked in: the loaded page derives its API/WS URLs from `location`.
-- The shell does not manage the backend process. Start `jarvis serve` independently
-  (terminal, `launchd`, or a service) so remote access survives the window.
+- Microphone requires a secure context — localhost or the Tailscale HTTPS URL.
+- The backend is a separate process owned by the app; it is not a remote service unless
+  you point Settings at a remote URL.
+- Remote access from other devices: run the backend and expose it with Tailscale
+  (`docs/operations/running.md`); set this app's Backend URL to the HTTPS URL.

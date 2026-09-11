@@ -50,12 +50,12 @@ and `README.md` for architecture and conventions.
 ### Desktop app
 ```sh
 cd apps/desktop && npm install
-JARVIS_URL="http://127.0.0.1:8766" npm start
-# remote backend:
-JARVIS_URL="https://<machine>.<tailnet>.ts.net:8443" npm start
+npm start
 ```
-The window is a client; closing it must not stop the backend. If `JARVIS_URL` is a
-local address and no backend is running, the app starts one (detached).
+All-in-one: the app starts the backend itself (bundled runtime → bundled `uv` → dev
+venv), keeps models resident, and stops the backend on quit. Open **Settings…** to set
+the port, brain, or an optional API key. Point it at a remote host via the Backend URL
+setting if you don't want it running the backend locally.
 
 ### Model lifecycle
 `jarvis serve` **loads and holds** the models at startup (warmup) so turns are fast;

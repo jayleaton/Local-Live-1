@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -23,6 +24,9 @@ from jarvis.runtime.memory import InMemoryToolRuntime
 def _find_config(explicit: Optional[str]) -> Optional[Path]:
     if explicit:
         return Path(explicit)
+    env_config = os.environ.get("JARVIS_CONFIG")
+    if env_config and Path(env_config).exists():
+        return Path(env_config)
     for candidate in ("jarvis.config.json", "jarvis.config.example.json"):
         if Path(candidate).exists():
             return Path(candidate)
