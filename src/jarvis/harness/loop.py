@@ -22,7 +22,9 @@ DEFAULT_SYSTEM_PROMPT = (
     "the intent charitably rather than refusing. When a search or lookup returns "
     "nothing or the terms look wrong, retry with partial substrings, alternate "
     "spellings, or synonyms before concluding it does not exist; only ask a short "
-    "clarifying question after a couple of genuinely different attempts."
+    "clarifying question after a couple of genuinely different attempts. For "
+    "greetings, thanks, and small talk, reply directly - never call a tool for "
+    "them."
 )
 
 
