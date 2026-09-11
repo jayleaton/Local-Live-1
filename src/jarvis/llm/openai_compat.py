@@ -15,6 +15,170 @@ from jarvis.core.types import LLMResponse, Message, ToolCall, ToolSpec
 from jarvis.llm.base import LLMProvider, parse_tool_calls
 
 _TOOL_NAME_SAFE = re.compile(r"[^a-zA-Z0-9_-]")
+_THINK = re.compile(r"<think>.*?</think>|<think>.*$|</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_think(text: str) -> str:
+    """Remove leaked reasoning (`<think>...</think>`) from a model reply."""
+    if not text:
+        return text
+    return _THINK.sub("", text).strip()
+
+
+def _strip_leading_reasoning(text: str) -> str:
+    """Drop reasoning that precedes a closing `</think>`.
+
+    Some Qwen templates prefill `<think>` in the generation prompt, so the
+    model's output is `reasoning...</think>answer` with no opening tag.
+    """
+    if text and "</think>" in text:
+        head, _, tail = text.partition("</think>")
+        if "<think>" not in head:
+            return tail.lstrip()
+    return text
+
+
+_TOOLCALL_BLOCK = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL | re.IGNORECASE)
+_FUNCTION_TAG = re.compile(r"<function=([^>\s]+)\s*>(.*?)(?:</function>|$)", re.DOTALL | re.IGNORECASE)
+_PARAM_TAG = re.compile(r"<parameter=([^>\s]+)\s*>\s*(.*?)\s*</parameter>", re.DOTALL | re.IGNORECASE)
+_BARE_NAME = re.compile(r"[A-Za-z_][\w.\-]*")
+
+
+def _coerce(value: str):
+    v = value.strip()
+    if len(v) >= 2 and v[0] in "[{" and v[-1] in "]}":
+        try:
+            return json.loads(v)
+        except json.JSONDecodeError:
+            return v
+    if v.lower() in ("true", "false"):
+        return v.lower() == "true"
+    for cast in (int, float):
+        try:
+            return cast(v)
+        except ValueError:
+            continue
+    return v
+
+
+def _parse_tool_block(block: str, name_decoder: Optional[dict[str, str]] = None) -> Optional[ToolCall]:
+    """Parse one tool-call body in JSON, Qwen-XML, or bare-name form."""
+    block = (block or "").strip()
+    if not block:
+        return None
+    if block.startswith("{"):
+        try:
+            obj = json.loads(block)
+        except json.JSONDecodeError:
+            obj = None
+        if isinstance(obj, dict):
+            fn = obj.get("function") if isinstance(obj.get("function"), dict) else obj
+            name = (fn.get("name") or obj.get("name") or "").strip()
+            args = fn.get("arguments", obj.get("arguments", {}))
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    args = {"_raw": args}
+            if name:
+                return ToolCall(
+                    id=f"call_{uuid.uuid4().hex[:8]}",
+                    name=(name_decoder or {}).get(name, name),
+                    arguments=args or {},
+                )
+    fm = _FUNCTION_TAG.search(block)
+    if fm:
+        name = fm.group(1)
+        body = fm.group(2)
+        if _PARAM_TAG.search(body):
+            args = {m.group(1): _coerce(m.group(2)) for m in _PARAM_TAG.finditer(body)}
+        else:
+            args = {}
+            try:
+                parsed = json.loads(body.strip() or "{}")
+                if isinstance(parsed, dict):
+                    args = parsed
+            except json.JSONDecodeError:
+                args = {}
+        return ToolCall(
+            id=f"call_{uuid.uuid4().hex[:8]}",
+            name=(name_decoder or {}).get(name, name),
+            arguments=args,
+        )
+    m = _BARE_NAME.match(block)
+    if m and m.group(0) == block.splitlines()[0].split("(")[0].strip():
+        name = m.group(0)
+        return ToolCall(id=f"call_{uuid.uuid4().hex[:8]}", name=(name_decoder or {}).get(name, name), arguments={})
+    return None
+
+
+def parse_text_tool_calls(text: str, name_decoder: Optional[dict[str, str]] = None) -> tuple[str, list[ToolCall]]:
+    """Extract tool calls that a local model emitted as text rather than via the
+    structured `tool_calls` field (common with llama.cpp and smaller models)."""
+    if not text or "<" not in text:
+        return text, []
+    calls: list[ToolCall] = []
+
+    def repl(match: "re.Match[str]") -> str:
+        call = _parse_tool_block(match.group(1), name_decoder)
+        if call:
+            calls.append(call)
+            return ""
+        return match.group(0)
+
+    clean = _TOOLCALL_BLOCK.sub(repl, text)
+    if not calls and "<function=" in clean:
+        for fm in list(_FUNCTION_TAG.finditer(clean)):
+            call = _parse_tool_block(fm.group(0), name_decoder)
+            if call:
+                calls.append(call)
+        clean = _FUNCTION_TAG.sub("", clean)
+    # Unclosed trailing <tool_call> (model truncated mid-call).
+    if "<tool_call>" in clean:
+        idx = clean.find("<tool_call>")
+        call = _parse_tool_block(clean[idx + len("<tool_call>"):], name_decoder)
+        if call:
+            calls.append(call)
+            clean = clean[:idx]
+    return clean.strip(), calls
+
+
+class _ThinkStripper:
+    """Stateful `<think>` filter that tolerates tags split across stream deltas."""
+
+    def __init__(self) -> None:
+        self._in = False
+        self._buf = ""
+
+    def feed(self, chunk: str) -> str:
+        self._buf += chunk
+        out: list[str] = []
+        while self._buf:
+            if self._in:
+                i = self._buf.find("</think>")
+                if i == -1:
+                    self._buf = self._buf[-8:]
+                    break
+                self._buf = self._buf[i + len("</think>"):]
+                self._in = False
+                continue
+            i = self._buf.find("<think>")
+            if i == -1:
+                keep = 6
+                if len(self._buf) > keep:
+                    out.append(self._buf[:-keep])
+                    self._buf = self._buf[-keep:]
+                break
+            out.append(self._buf[:i])
+            self._buf = self._buf[i + len("<think>"):]
+            self._in = True
+        return "".join(out)
+
+    def flush(self) -> str:
+        tail = "" if self._in else self._buf
+        self._buf = ""
+        self._in = False
+        return tail
 
 
 def sanitize_tool_name(name: str) -> str:
@@ -95,6 +259,7 @@ class OpenAICompatProvider(LLMProvider):
         extra_params: Optional[dict] = None,
         reasoning_effort: Optional[str] = None,
         strict_tools: bool = False,
+        think_prefix: bool = False,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -104,6 +269,9 @@ class OpenAICompatProvider(LLMProvider):
         self.extra_params = dict(extra_params or {})
         self.reasoning_effort = reasoning_effort
         self.strict_tools = strict_tools
+        # True when the chat template prefills `<think>` in the prompt, so the
+        # model's own output begins with reasoning and a closing `</think>`.
+        self.think_prefix = think_prefix
         self._last_tool_calls: list[ToolCall] = []
 
     def supports_streaming(self) -> bool:
@@ -182,9 +350,20 @@ class OpenAICompatProvider(LLMProvider):
         if not choices:
             raise RuntimeError(f"LLM returned no choices: {json.dumps(result)[:500]}")
         message = choices[0].get("message", {}) or {}
+        raw = message.get("content") or ""
+        if self.think_prefix:
+            raw = _strip_leading_reasoning(raw)
+        calls = parse_tool_calls(message.get("tool_calls") or [], name_decoder=decoder)
+        if calls:
+            text = _strip_think(raw)
+        else:
+            # Extract tool markup before stripping reasoning so a call that
+            # follows or interrupts the think block is not lost.
+            text, calls = parse_text_tool_calls(raw, name_decoder=decoder)
+            text = _strip_think(text)
         return LLMResponse(
-            text=message.get("content") or "",
-            tool_calls=parse_tool_calls(message.get("tool_calls") or [], name_decoder=decoder),
+            text=text,
+            tool_calls=calls,
             finish_reason=choices[0].get("finish_reason", "stop"),
             usage=result.get("usage") or {},
             model=result.get("model", self.model),
@@ -232,6 +411,9 @@ class OpenAICompatProvider(LLMProvider):
         threading.Thread(target=self._sse_worker, args=(payload, q, cancel), daemon=True).start()
 
         fragments: dict[int, dict] = {}
+        stripper = _ThinkStripper()
+        pending = ""  # holds leading reasoning until its `</think>` arrives
+        seen_answer = not self.think_prefix
         while True:
             item = await asyncio.to_thread(q.get)
             if item is None:
@@ -249,7 +431,19 @@ class OpenAICompatProvider(LLMProvider):
             delta = choices[0].get("delta") or {}
             content = delta.get("content")
             if content:
-                yield content
+                if not seen_answer:
+                    pending += content
+                    idx = pending.find("</think>")
+                    if idx == -1:
+                        content = ""
+                    else:
+                        seen_answer = True
+                        content = pending[idx + len("</think>"):].lstrip()
+                        pending = ""
+                if content:
+                    cleaned = stripper.feed(content)
+                    if cleaned:
+                        yield cleaned
             for tc in delta.get("tool_calls") or []:
                 idx = tc.get("index", 0)
                 slot = fragments.setdefault(idx, {"id": "", "name": "", "args": ""})
@@ -260,6 +454,10 @@ class OpenAICompatProvider(LLMProvider):
                     slot["name"] = fn["name"]
                 if fn.get("arguments"):
                     slot["args"] += fn["arguments"]
+
+        tail = stripper.flush()
+        if tail:
+            yield tail
 
         calls: list[ToolCall] = []
         for idx in sorted(fragments):
@@ -280,10 +478,21 @@ class OpenAICompatProvider(LLMProvider):
         self._last_tool_calls = calls
 
     def parse_output(self, raw: str, tools: list[ToolSpec]) -> LLMResponse:
+        if self.think_prefix:
+            raw = _strip_leading_reasoning(raw)
         calls = list(self._last_tool_calls)
+        if calls:
+            text = _strip_think(raw)
+        else:
+            text, calls = parse_text_tool_calls(raw)
+            text = _strip_think(text)
         return LLMResponse(
-            text=raw.strip(),
+            text=text.strip(),
             tool_calls=calls,
             finish_reason="tool_calls" if calls else "stop",
             model=self.model,
         )
+
+    def tool_markers(self) -> list[str]:
+        # Withheld from the streamed reply; parsed into tool calls at turn end.
+        return ["<tool_call>", "<function="]

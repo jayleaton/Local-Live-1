@@ -9,7 +9,7 @@
 // Settings cover internals: run-locally, port, remote URL, brain, model base URL/name,
 // API key. Works on macOS (on-device MLX), Windows/Linux (API or a local
 // OpenAI-compatible server such as llama.cpp/vLLM on an NVIDIA GPU).
-const { app, BrowserWindow, Tray, Menu, shell, nativeImage, systemPreferences, ipcMain } = require("electron");
+const { app, BrowserWindow, Tray, Menu, shell, nativeImage, systemPreferences, ipcMain, globalShortcut } = require("electron");
 const { spawn, spawnSync } = require("child_process");
 const http = require("http");
 const path = require("path");
@@ -47,7 +47,27 @@ function loadConfig() {
     apiKey: saved.apiKey || "",
     baseUrl: saved.baseUrl || "",
     model: saved.model || "",
+    // Global accelerator that starts/stops recording. Empty disables it.
+    hotkeyToggle: saved.hotkeyToggle !== undefined ? saved.hotkeyToggle : "Control+Alt+Space",
   };
+}
+
+function registerShortcuts() {
+  try {
+    globalShortcut.unregisterAll();
+  } catch {}
+  const acc = cfg && cfg.hotkeyToggle;
+  if (!acc) return;
+  try {
+    const ok = globalShortcut.register(acc, () => {
+      if (win && !win.isDestroyed()) {
+        win.webContents.executeJavaScript("window.jarvisToggleMic && window.jarvisToggleMic()").catch(() => {});
+      }
+    });
+    if (!ok) console.warn(`[shortcuts] could not register ${acc}`);
+  } catch (e) {
+    console.warn(`[shortcuts] ${acc} failed: ${e}`);
+  }
 }
 function saveConfig() {
   try {
@@ -60,29 +80,47 @@ function refreshBackendUrl() {
 }
 const backendDir = () => (app.isPackaged ? path.join(process.resourcesPath, "backend") : REPO_ROOT);
 
+function readJson(p) {
+  try {
+    return JSON.parse(fs.readFileSync(p, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 function writeBackendConfig() {
   const bd = backendDir();
-  let base = {};
-  try {
-    base = JSON.parse(fs.readFileSync(path.join(bd, "jarvis.config.example.json"), "utf8"));
-  } catch {
-    base = {};
+  const example = readJson(path.join(bd, "jarvis.config.example.json")) || {};
+  // Preserve choices made in the app/web UI (speech + brain model, voice, keys)
+  // instead of resetting them from the example on every launch.
+  const saved = readJson(backendConfigPath()) || {};
+  const out = { ...example, ...saved };
+  out.voice = { ...(example.voice || {}), ...(saved.voice || {}) };
+  out.model = { ...(example.model || {}), ...(saved.model || {}) };
+  out.local = { ...(example.local || {}), ...(saved.local || {}) };
+  out.agents = saved.agents || example.agents;
+  // The web UI owns response_mode. Only apply the desktop Brain setting when the
+  // user actually changed it here; otherwise a saved On-device choice would
+  // revert to API on every launch.
+  if (cfg._applyBrain) {
+    out.response_mode = cfg.brain;
+    cfg._applyBrain = false;
+  } else if (saved.response_mode) {
+    out.response_mode = saved.response_mode;
+  } else {
+    out.response_mode = cfg.brain;
   }
-  base.response_mode = cfg.brain;
-  base.voice = base.voice || {};
-  // Nemotron/Chatterbox sidecars are macOS-oriented; the bundled Windows/Linux
-  // runtime falls back to sherpa ASR + Kokoro TTS.
-  base.voice.streaming_backend = isMac ? "nemotron" : "sherpa";
-  base.voice.tts_backend = isMac ? "chatterbox" : "kokoro";
-  base.model = base.model || {};
-  if (cfg.baseUrl) base.model.base_url = cfg.baseUrl; // e.g. http://127.0.0.1:8080/v1 (llama.cpp/vLLM)
-  if (cfg.model) base.model.model = cfg.model;
+  // Platform defaults only when the user hasn't chosen one yet.
+  if (!out.voice.streaming_backend) out.voice.streaming_backend = isMac ? "nemotron" : "sherpa";
+  if (!out.voice.tts_backend) out.voice.tts_backend = isMac ? "chatterbox" : "kokoro";
+  if (cfg.baseUrl) out.model.base_url = cfg.baseUrl; // e.g. http://127.0.0.1:8080/v1 (llama.cpp/vLLM)
+  if (cfg.model) out.model.model = cfg.model;
   if (cfg.apiKey) {
-    base.model.api_key = cfg.apiKey;
-    if (base.agents && base.agents.worker) base.agents.worker.api_key = cfg.apiKey;
+    out.model.api_key = cfg.apiKey;
+    if (out.agents && out.agents.worker) out.agents.worker.api_key = cfg.apiKey;
   }
   try {
-    fs.writeFileSync(backendConfigPath(), JSON.stringify(base, null, 2));
+    fs.writeFileSync(backendConfigPath(), JSON.stringify(out, null, 2));
   } catch {}
 }
 
@@ -288,7 +326,9 @@ function openSettings() {
     <label style="display:block;font-size:11px;color:#9aa0a6">Model name</label>
     <input id="model" placeholder="deepseek-flash" style="width:100%;box-sizing:border-box;background:#0f1216;border:1px solid #2a2e35;color:#e8eaed;border-radius:8px;padding:8px;margin:0 0 12px"/>
     <label style="display:block;font-size:11px;color:#9aa0a6">API key (optional; stored locally)</label>
-    <input id="key" type="password" style="width:100%;box-sizing:border-box;background:#0f1216;border:1px solid #2a2e35;color:#e8eaed;border-radius:8px;padding:8px;margin:0 0 14px"/>
+    <input id="key" type="password" style="width:100%;box-sizing:border-box;background:#0f1216;border:1px solid #2a2e35;color:#e8eaed;border-radius:8px;padding:8px;margin:0 0 12px"/>
+    <label style="display:block;font-size:11px;color:#9aa0a6">Toggle-recording hotkey (works anywhere; e.g. Control+Alt+Space, blank to disable)</label>
+    <input id="hotkey" placeholder="Control+Alt+Space" style="width:100%;box-sizing:border-box;background:#0f1216;border:1px solid #2a2e35;color:#e8eaed;border-radius:8px;padding:8px;margin:0 0 14px"/>
     <div style="display:flex;gap:8px">
       <button id="s" style="flex:1;padding:9px;border:1px solid #2a2e35;background:#232830;color:#e8eaed;border-radius:8px">Save &amp; restart</button>
       <button id="c" style="flex:1;padding:9px;border:1px solid #2a2e35;background:transparent;color:#e8eaed;border-radius:8px">Cancel</button>
@@ -298,11 +338,26 @@ function openSettings() {
     const cur=${cur};
     const g=id=>document.getElementById(id);
     g('run').checked=cur.runLocally; g('port').value=cur.port; g('url').value=cur.url||'';
-    g('brain').value=cur.brain; g('baseUrl').value=cur.baseUrl||''; g('model').value=cur.model||''; g('key').value=cur.apiKey||'';
-    g('s').onclick=()=>window.jarvisShell.saveSettings({runLocally:g('run').checked,port:parseInt(g('port').value||'8766',10),url:g('url').value.trim(),brain:g('brain').value,baseUrl:g('baseUrl').value.trim(),model:g('model').value.trim(),apiKey:g('key').value});
+    g('brain').value=cur.brain; g('baseUrl').value=cur.baseUrl||''; g('model').value=cur.model||''; g('key').value=cur.apiKey||''; g('hotkey').value=cur.hotkeyToggle||'';
+    g('s').onclick=()=>window.jarvisShell.saveSettings({runLocally:g('run').checked,port:parseInt(g('port').value||'8766',10),url:g('url').value.trim(),brain:g('brain').value,baseUrl:g('baseUrl').value.trim(),model:g('model').value.trim(),apiKey:g('key').value,hotkeyToggle:g('hotkey').value.trim()});
     g('c').onclick=()=>window.jarvisShell.close();
   </script></body></html>`;
   modal.loadURL(dataUrl(html));
+}
+
+// The web UI owns the voice/speech settings (model choice, TTS, brain). Expose
+// them from the app menu so users don't have to find the widget's gear first.
+function openVoiceSettings() {
+  showWindow();
+  if (!win || win.isDestroyed()) return;
+  const go = () =>
+    win.webContents
+      .executeJavaScript(
+        "try{ (window.jarvisOpenSettings||function(){view('settings');loadSettings();})('speech'); }catch(e){}"
+      )
+      .catch(() => {});
+  if (win.webContents.isLoading()) win.webContents.once("did-finish-load", go);
+  else go();
 }
 
 function buildMenu() {
@@ -311,7 +366,8 @@ function buildMenu() {
       {
         label: "Local-Live-1",
         submenu: [
-          { label: "Settings…", click: openSettings },
+          { label: "Voice & speech settings…", click: openVoiceSettings },
+          { label: "Backend settings…", click: openSettings },
           { label: "Reload", click: () => win && win.reload() },
           { label: "Open backend log", click: () => shell.openPath(backendLogPath()) },
           { type: "separator" },
@@ -330,7 +386,8 @@ function createTray() {
     tray.setContextMenu(
       Menu.buildFromTemplate([
         { label: "Show Local-Live-1", click: showWindow },
-        { label: "Settings…", click: openSettings },
+        { label: "Voice & speech settings…", click: openVoiceSettings },
+        { label: "Backend settings…", click: openSettings },
         { label: "Reload", click: () => win && win.reload() },
         { type: "separator" },
         { label: "Quit", click: () => { quitting = true; app.quit(); } },
@@ -341,9 +398,12 @@ function createTray() {
 }
 
 ipcMain.on("jarvis-save-settings", async (_e, data) => {
+  const brainChanged = data && data.brain !== undefined && data.brain !== cfg.brain;
   cfg = { ...cfg, ...data };
+  cfg._applyBrain = brainChanged;
   saveConfig();
   refreshBackendUrl();
+  registerShortcuts();
   const caller = BrowserWindow.getFocusedWindow();
   if (caller && caller !== win) caller.close();
   stopBackend();
@@ -362,6 +422,7 @@ app.whenReady().then(async () => {
   }
   cfg = loadConfig();
   refreshBackendUrl();
+  registerShortcuts();
   buildMenu();
   createWindow();
   createTray();
@@ -372,5 +433,6 @@ app.whenReady().then(async () => {
 app.on("window-all-closed", (e) => e.preventDefault());
 app.on("before-quit", () => {
   quitting = true;
+  try { globalShortcut.unregisterAll(); } catch {}
   stopBackend();
 });

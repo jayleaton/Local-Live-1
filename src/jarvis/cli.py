@@ -59,13 +59,20 @@ async def _build_harness(cfg: JarvisConfig, confirmer, *, auto_approve: Optional
     tools = manager.tools()
 
     # The on-device model is the default voice brain; the API model is an option
-    # (settings toggle) or the fallback when no local model is configured.
+    # (settings toggle) or the fallback when no local model is configured. MLX is
+    # Apple-Silicon only; elsewhere GGUF models are served by llama.cpp, which the
+    # web service starts, so this builds the API provider as a placeholder.
     if cfg.response_mode != "api" and cfg.local is not None:
-        provider = MLXProvider(
-            cfg.local.model,
-            temperature=cfg.local.temperature,
-            max_tokens=cfg.local.max_tokens,
-        )
+        from jarvis.llm import local_models
+
+        if local_models.apple_silicon():
+            provider = MLXProvider(
+                cfg.local.model,
+                temperature=cfg.local.temperature,
+                max_tokens=cfg.local.max_tokens,
+            )
+        else:
+            provider = _provider_from(cfg.model)
     else:
         provider = _provider_from(cfg.model)
 

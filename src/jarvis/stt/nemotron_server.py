@@ -10,6 +10,11 @@ from typing import Optional
 
 BIN_CANDIDATES = [
     os.environ.get("NEMO_SPEECH_BIN", ""),
+    # NVIDIA's Windows installer default (%LOCALAPPDATA%\Programs\NeMoSpeech).
+    str(Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Programs/NeMoSpeech/bin/nemo-speech.exe")
+    if os.name == "nt"
+    else "",
+    # Linux/macOS installer default prefix.
     str(Path.home() / ".local/opt/nemo-speech/nemo-speech/bin/nemo-speech"),
     str(Path.home() / ".local/bin/nemo-speech"),
     "nemo-speech",

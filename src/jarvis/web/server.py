@@ -67,6 +67,29 @@ class JarvisService:
         self._runner.submit(self.harness.start())
         self._lock = threading.Lock()
         self._streaming = None
+        self._llama_proc = None
+        try:
+            from jarvis.llm import llama_runtime
+
+            llama_runtime.stop_all()  # clear orphaned servers from a previous run
+        except Exception:  # noqa: BLE001
+            pass
+        if cfg.response_mode != "api" and cfg.local is not None:
+            try:
+                self.harness.provider = self._make_provider()
+            except Exception:  # noqa: BLE001 - fall back to the placeholder provider
+                pass
+        # One background speech-model job at a time (install runtime or pull model).
+        self._asr_lock = threading.Lock()
+        self._asr_job: dict = {
+            "running": False,
+            "kind": "",
+            "name": "",
+            "message": "",
+            "percent": None,
+            "done": False,
+            "error": None,
+        }
 
     def _build_tts(self):
         backend = getattr(self.cfg.voice, "tts_backend", "kokoro")
@@ -181,24 +204,87 @@ class JarvisService:
                     "cancelled": event.get("cancelled", False),
                 }
 
+    def _api_provider(self):
+        from jarvis.llm.openai_compat import OpenAICompatProvider
+
+        m = self.cfg.model
+        return OpenAICompatProvider(
+            m.base_url,
+            m.model,
+            api_key=m.resolved_api_key(),
+            timeout=m.timeout,
+            name=f"api:{m.model}",
+            extra_params=m.extra_params,
+            reasoning_effort=m.reasoning_effort,
+            strict_tools=m.strict_tools,
+        )
+
+    @staticmethod
+    def _free_port() -> int:
+        import socket
+
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        return port
+
+    def _brain_file(self, repo: str) -> str:
+        try:
+            from jarvis.llm import local_models
+
+            item = next((c for c in local_models.catalog() if c["repo"] == repo), None)
+            return item["file"] if item else ""
+        except Exception:  # noqa: BLE001
+            return ""
+
     def _make_provider(self):
         if self.cfg.response_mode == "api" or self.cfg.local is None:
-            from jarvis.llm.openai_compat import OpenAICompatProvider
+            return self._api_provider()
+        repo = self.cfg.local.model
+        filename = self._brain_file(repo)
+        from jarvis.llm import local_models
 
-            m = self.cfg.model
-            return OpenAICompatProvider(
-                m.base_url,
-                m.model,
-                api_key=m.resolved_api_key(),
-                timeout=m.timeout,
-                name=f"api:{m.model}",
-                extra_params=m.extra_params,
-                reasoning_effort=m.reasoning_effort,
-                strict_tools=m.strict_tools,
-            )
+        if local_models.runtime_for(repo, filename) == "llama.cpp":
+            return self._llama_provider(repo, filename) or self._api_provider()
         from jarvis.llm.mlx_local import MLXProvider
 
-        return MLXProvider(self.cfg.local.model, temperature=self.cfg.local.temperature, max_tokens=self.cfg.local.max_tokens)
+        return MLXProvider(repo, temperature=self.cfg.local.temperature, max_tokens=self.cfg.local.max_tokens)
+
+    def _llama_provider(self, repo: str, filename: str):
+        """Start (or reuse) llama-server for a GGUF model and point at it."""
+        from jarvis.llm import llama_runtime, local_models
+        from jarvis.llm.openai_compat import OpenAICompatProvider
+
+        path = local_models.model_path(repo, filename)
+        if not path:
+            return None
+        llama_runtime.stop(self._llama_proc)
+        port = self._free_port()
+        template = local_models.chat_template_path(repo)
+        self._llama_proc = llama_runtime.start(path, port, chat_template_file=template)
+        return OpenAICompatProvider(
+            f"http://127.0.0.1:{port}/v1",
+            "local",
+            api_key="",
+            timeout=600.0,
+            name=f"llama.cpp:{repo.split('/')[-1]}",
+            # This template prefills <think>, so the stream must drop reasoning.
+            think_prefix=bool(template),
+        )
+
+    def _activate_brain(self, repo: str, filename: str = "") -> None:
+        """Make a downloaded model the active brain and load it."""
+        if self.cfg.local is None:
+            return
+        self.cfg.local.model = repo
+        self._persist()
+        if self.cfg.response_mode == "api":
+            return
+        if not filename:
+            filename = self._brain_file(repo)
+        self.harness.provider = self._make_provider()
+        self._load_provider_async()
 
     def warmup(self) -> None:
         """Load models now and keep them resident so the first turn isn't slow."""
@@ -251,10 +337,21 @@ class JarvisService:
             "endpointing_ms": self.cfg.voice.endpointing_ms,
             "asr_backend": self.cfg.voice.streaming_backend,
             "asr_backends": self._asr_backends(),
+            "local_available": self._local_available(),
             "brain": self.harness.provider.name,
             "tools": sorted(t.name for t in self.harness.runtime.tools()),
             "servers": sorted(c.name for c in self.cfg.servers.values() if c.enabled),
         }
+
+    @staticmethod
+    def _local_available() -> bool:
+        """On-device brain: MLX on Apple Silicon, GGUF (llama.cpp) elsewhere."""
+        try:
+            import huggingface_hub  # noqa: F401
+
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
     @staticmethod
     def _asr_backends() -> list[dict]:
@@ -267,14 +364,175 @@ class JarvisService:
             nemo_available = False
         return [
             {"value": "sherpa", "label": "Sherpa Zipformer (fast, offline)", "available": True},
-            {"value": "nemotron", "label": "NVIDIA Nemotron 3.5 streaming", "available": nemo_available},
+            {"value": "nemotron", "label": "NVIDIA Nemotron streaming", "available": nemo_available},
         ]
+
+    def asr_models(self) -> dict:
+        """Catalog of speech models plus the currently active one."""
+        try:
+            from jarvis.stt import nemo_models
+
+            info = nemo_models.list_models()
+            info["cache_dir"] = str(nemo_models.cache_dir())
+        except Exception as e:  # noqa: BLE001
+            info = {"runtime_installed": False, "cli_path": None, "models": [], "error": f"{type(e).__name__}: {e}"}
+        info["active"] = {
+            "backend": self.cfg.voice.streaming_backend,
+            "nemo_model": self.cfg.voice.nemo_model,
+        }
+        return info
+
+    def brain_models(self) -> dict:
+        """Platform-appropriate on-device brain models plus the active one."""
+        active = self.cfg.local.model if self.cfg.local else None
+        if not self._local_available():
+            return {"models": [], "available": False, "active": active, "reason": "huggingface_hub is not installed"}
+        try:
+            from jarvis.llm import local_models
+
+            models = local_models.list_models()
+            runtime = {"kind": "mlx" if local_models.apple_silicon() else "llama.cpp"}
+            if not local_models.apple_silicon():
+                from jarvis.llm import llama_runtime
+
+                runtime["backend"] = llama_runtime.gpu_backend()
+                runtime["installed"] = llama_runtime.find_server() is not None
+        except Exception as e:  # noqa: BLE001
+            return {"models": [], "available": True, "error": f"{type(e).__name__}: {e}", "active": active}
+        return {"models": models, "available": True, "active": active, "runtime": runtime}
+
+    def asr_status(self) -> dict:
+        with self._asr_lock:
+            job = dict(self._asr_job)
+        if job.get("running") and job.get("kind") in ("pull", "brain") and job.get("repo"):
+            try:
+                if job["kind"] == "pull":
+                    from jarvis.stt import nemo_models
+
+                    done = nemo_models.cached_bytes(job["repo"])
+                else:
+                    from jarvis.llm import local_models
+
+                    done = local_models.cached_bytes(job["repo"], job.get("file", ""))
+                job["bytes_done"] = done
+                job["bytes_total"] = job.get("size") or 0
+            except Exception:  # noqa: BLE001 - progress is best-effort
+                pass
+        return job
+
+    def start_brain_job(self, repo: str, *, file: str = "", size: int = 0, label: str = "") -> dict:
+        if not repo:
+            return {"started": False, "error": "missing model repo"}
+        try:
+            from jarvis.llm import local_models
+
+            if local_models.is_downloaded(repo, file, size):
+                # Already present: just make it the active model.
+                self._activate_brain(repo, file)
+                return {"started": False, "installed": True, "name": repo}
+        except Exception:  # noqa: BLE001
+            pass
+        with self._asr_lock:
+            if self._asr_job.get("running"):
+                return {"started": False, "error": "a model job is already running"}
+            self._asr_job = {
+                "running": True,
+                "kind": "brain",
+                "name": repo,
+                "repo": repo,
+                "file": file,
+                "size": size,
+                "label": label,
+                "bytes_done": 0,
+                "bytes_total": size,
+                "message": "starting…",
+                "percent": None,
+                "done": False,
+                "error": None,
+            }
+        threading.Thread(target=self._run_asr_job, args=("brain", repo), daemon=True).start()
+        return {"started": True, "kind": "brain", "name": repo}
+
+    def start_asr_job(self, kind: str, name: str = "", *, repo: str = "", size: int = 0, label: str = "") -> dict:
+        if kind not in ("install", "pull"):
+            return {"started": False, "error": f"unknown job '{kind}'"}
+        if kind == "pull":
+            # Never download a second copy: any installed revision counts.
+            try:
+                from jarvis.stt import nemo_models
+
+                if nemo_models.is_installed(repo or name, size):
+                    return {"started": False, "installed": True, "name": name}
+            except Exception:  # noqa: BLE001
+                pass
+        with self._asr_lock:
+            if self._asr_job.get("running"):
+                return {"started": False, "error": "a speech-model job is already running"}
+            self._asr_job = {
+                "running": True,
+                "kind": kind,
+                "name": name,
+                "repo": repo,
+                "size": size,
+                "label": label,
+                "bytes_done": 0,
+                "bytes_total": size,
+                "message": "starting…",
+                "percent": None,
+                "done": False,
+                "error": None,
+            }
+        threading.Thread(target=self._run_asr_job, args=(kind, name), daemon=True).start()
+        return {"started": True, "kind": kind, "name": name}
+
+    def _run_asr_job(self, kind: str, name: str) -> None:
+        from jarvis.stt import nemo_models
+
+        def progress(line: str) -> None:
+            with self._asr_lock:
+                self._asr_job["message"] = line[-300:]
+                pct = nemo_models.parse_percent(line)
+                if pct is not None:
+                    self._asr_job["percent"] = pct
+
+        try:
+            if kind == "pull":
+                nemo_models.pull(name, progress)
+            elif kind == "brain":
+                from jarvis.llm import local_models
+
+                with self._asr_lock:
+                    filename = self._asr_job.get("file", "")
+                local_models.pull(name, filename, progress)
+                self._activate_brain(name, filename)
+            else:
+                nemo_models.install_runtime(progress)
+            with self._asr_lock:
+                self._asr_job.update(running=False, done=True, percent=100, message="done")
+        except Exception as e:  # noqa: BLE001 - surfaced to the UI
+            with self._asr_lock:
+                self._asr_job.update(running=False, done=True, error=f"{type(e).__name__}: {e}", message="failed")
+
+    def _load_provider_async(self) -> None:
+        """Load the active brain in the background (MLX loads are heavy)."""
+
+        def run() -> None:
+            try:
+                provider = self.harness.provider
+                if hasattr(provider, "_load"):
+                    provider._load()
+            except Exception:  # noqa: BLE001 - surfaced on first turn instead
+                pass
+
+        threading.Thread(target=run, daemon=True).start()
 
     def apply_settings(self, data: dict) -> dict:
         if data.get("response_mode") in ("local", "api"):
             self.cfg.response_mode = data["response_mode"]
         if data.get("asr_backend") in ("nemotron", "sherpa"):
             self.cfg.voice.streaming_backend = data["asr_backend"]
+        if data.get("nemo_model"):
+            self.cfg.voice.nemo_model = str(data["nemo_model"])
         if data.get("local_model") and self.cfg.local is not None:
             self.cfg.local.model = data["local_model"]
         if data.get("api_model"):
@@ -290,16 +548,30 @@ class JarvisService:
             self.cfg.voice.max_spoken_sentences = max(1, int(data["max_spoken_sentences"]))
         if data.get("endpointing_ms") is not None:
             self.cfg.voice.endpointing_ms = max(100, int(data["endpointing_ms"]))
-        # Swap the response provider live.
-        self.harness.provider = self._make_provider()
+        # Swap the response provider live, and warm a local brain in the background.
+        try:
+            self.harness.provider = self._make_provider()
+        except Exception as e:  # noqa: BLE001 - fall back to the API brain
+            self.harness.provider = self._api_provider()
+            self._brain_error = f"{type(e).__name__}: {e}"
+        local = self.cfg.response_mode != "api" and self.cfg.local is not None
         self._persist()
-        return self.get_settings()
+        if local:
+            self._load_provider_async()
+        settings = self.get_settings()
+        if getattr(self, "_brain_error", None):
+            settings["brain_error"] = self._brain_error
+            self._brain_error = None
+        return settings
 
     def _persist(self) -> None:
         import json
+        import os
         from pathlib import Path
 
-        path = Path("jarvis.config.json")
+        # Write back to the file this config was loaded from (the desktop passes
+        # it via JARVIS_CONFIG); never to an unrelated cwd file.
+        path = Path(getattr(self.cfg, "source_path", None) or os.environ.get("JARVIS_CONFIG") or "jarvis.config.json")
         try:
             data = json.loads(path.read_text())
         except Exception:
@@ -310,6 +582,7 @@ class JarvisService:
         data.setdefault("voice", {})["tts_voice"] = self.cfg.voice.tts_voice
         data["voice"]["tts_backend"] = getattr(self.cfg.voice, "tts_backend", "kokoro")
         data["voice"]["streaming_backend"] = self.cfg.voice.streaming_backend
+        data["voice"]["nemo_model"] = self.cfg.voice.nemo_model
         data["voice"]["max_spoken_sentences"] = self.cfg.voice.max_spoken_sentences
         data["voice"]["endpointing_ms"] = self.cfg.voice.endpointing_ms
         try:
@@ -394,6 +667,12 @@ class JarvisService:
             self._runner.submit(self.harness.stop())
         except Exception:
             pass
+        try:
+            from jarvis.llm import llama_runtime
+
+            llama_runtime.stop(self._llama_proc)
+        except Exception:  # noqa: BLE001
+            pass
 
     def start_ws(self, host: str, port: int) -> None:
         import numpy as np
@@ -475,7 +754,11 @@ class JarvisService:
                         json.dumps(
                             {
                                 "type": "session.update",
-                                "session": {"endpointing_ms": self.cfg.voice.endpointing_ms},
+                                "session": {
+                                    "sample_rate": 16000,
+                                    "automatic_punctuation": True,
+                                    "endpointing_ms": self.cfg.voice.endpointing_ms,
+                                },
                             }
                         )
                     )
@@ -585,6 +868,14 @@ def _handler_for(service: JarvisService, index_html: str):
                 self._json(200, {"ok": True})
             elif path == "/settings":
                 self._json(200, service.get_settings())
+            elif path == "/asr/models":
+                self._json(200, service.asr_models())
+            elif path == "/asr/status":
+                self._json(200, service.asr_status())
+            elif path == "/brain/models":
+                self._json(200, service.brain_models())
+            elif path == "/brain/status":
+                self._json(200, service.asr_status())
             else:
                 self._send(404, b"not found", "text/plain")
 
@@ -608,6 +899,36 @@ def _handler_for(service: JarvisService, index_html: str):
                 elif path == "/settings":
                     payload = json.loads(data.decode("utf-8") or "{}")
                     self._json(200, service.apply_settings(payload))
+                elif path == "/brain/pull":
+                    payload = json.loads(data.decode("utf-8") or "{}")
+                    repo = (payload.get("repo") or payload.get("name") or "").strip()
+                    self._json(
+                        200,
+                        service.start_brain_job(
+                            repo,
+                            file=payload.get("file") or "",
+                            size=int(payload.get("size") or 0),
+                            label=payload.get("label") or "",
+                        ),
+                    )
+                elif path == "/asr/install":
+                    self._json(200, service.start_asr_job("install"))
+                elif path == "/asr/pull":
+                    payload = json.loads(data.decode("utf-8") or "{}")
+                    name = (payload.get("name") or "").strip()
+                    if not name:
+                        self._json(400, {"error": "missing model name"})
+                        return
+                    self._json(
+                        200,
+                        service.start_asr_job(
+                            "pull",
+                            name,
+                            repo=payload.get("repo") or "",
+                            size=int(payload.get("size") or 0),
+                            label=payload.get("label") or "",
+                        ),
+                    )
                 else:
                     self._send(404, b"not found", "text/plain")
             except Exception as e:  # noqa: BLE001
