@@ -47,6 +47,7 @@ async def _build_harness(cfg: JarvisConfig, confirmer, *, auto_approve: Optional
     from jarvis.dispatch.dispatcher import HeuristicDispatcher
     from jarvis.llm.mlx_local import MLXProvider
     from jarvis.runtime.composite import CompositeToolRuntime
+    from jarvis.tools.system import SystemRuntime
     from jarvis.tools.web import WebRuntime
 
     manager = MCPClientManager(list(cfg.servers.values()))
@@ -65,7 +66,10 @@ async def _build_harness(cfg: JarvisConfig, confirmer, *, auto_approve: Optional
         provider = _provider_from(cfg.model)
 
     agent_runtime = AgentRuntime(list(cfg.agents.values()))
-    runtime = CompositeToolRuntime(manager, agent_runtime, WebRuntime())
+    web_runtime = WebRuntime()
+    system_runtime = SystemRuntime()
+    runtime = CompositeToolRuntime(manager, agent_runtime, web_runtime, system_runtime)
+    system_runtime.bind(lambda: runtime.tools(), manager)
 
     dispatcher = None
     if cfg.dispatch.enabled and cfg.agents:

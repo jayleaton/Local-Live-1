@@ -90,9 +90,12 @@ class AgentHarness:
         return (
             self.config.system_prompt
             + f"\n\nTools available to you right now: {names}."
-            + " Use them whenever they are the reliable way to answer or act (web search for"
-            + " current facts, T3 tools for agents/projects/threads, etc.). Never claim you"
-            + " lack a capability that a listed tool provides."
+            + " Tools are namespaced by server: `t3.*` is the local T3 Code workspace MCP"
+            + " (projects/threads), `webtools.*` is local web search/fetch, `zread.*` reads"
+            + " GitHub repos, `agent.worker` is a remote worker agent."
+            + " If asked whether a local MCP server is running or what tools you have, call"
+            + " `system.mcp_status`. Use tools whenever they are the reliable way to answer"
+            + " or act. Never claim you lack a capability that a listed tool provides."
         )
 
     def _advertised_tools(self) -> list[ToolSpec]:
