@@ -25,6 +25,19 @@ def _strip_think(text: str) -> str:
     return _THINK.sub("", text).strip()
 
 
+def _strip_leading_reasoning(text: str) -> str:
+    """Drop reasoning that precedes a closing `</think>`.
+
+    Some Qwen templates prefill `<think>` in the generation prompt, so the
+    model's output is `reasoning...</think>answer` with no opening tag.
+    """
+    if text and "</think>" in text:
+        head, _, tail = text.partition("</think>")
+        if "<think>" not in head:
+            return tail.lstrip()
+    return text
+
+
 _TOOLCALL_BLOCK = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL | re.IGNORECASE)
 _FUNCTION_TAG = re.compile(r"<function=([^>\s]+)\s*>(.*?)(?:</function>|$)", re.DOTALL | re.IGNORECASE)
 _PARAM_TAG = re.compile(r"<parameter=([^>\s]+)\s*>\s*(.*?)\s*</parameter>", re.DOTALL | re.IGNORECASE)
@@ -246,6 +259,7 @@ class OpenAICompatProvider(LLMProvider):
         extra_params: Optional[dict] = None,
         reasoning_effort: Optional[str] = None,
         strict_tools: bool = False,
+        think_prefix: bool = False,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -255,6 +269,9 @@ class OpenAICompatProvider(LLMProvider):
         self.extra_params = dict(extra_params or {})
         self.reasoning_effort = reasoning_effort
         self.strict_tools = strict_tools
+        # True when the chat template prefills `<think>` in the prompt, so the
+        # model's own output begins with reasoning and a closing `</think>`.
+        self.think_prefix = think_prefix
         self._last_tool_calls: list[ToolCall] = []
 
     def supports_streaming(self) -> bool:
@@ -334,6 +351,8 @@ class OpenAICompatProvider(LLMProvider):
             raise RuntimeError(f"LLM returned no choices: {json.dumps(result)[:500]}")
         message = choices[0].get("message", {}) or {}
         raw = message.get("content") or ""
+        if self.think_prefix:
+            raw = _strip_leading_reasoning(raw)
         calls = parse_tool_calls(message.get("tool_calls") or [], name_decoder=decoder)
         if calls:
             text = _strip_think(raw)
@@ -393,6 +412,8 @@ class OpenAICompatProvider(LLMProvider):
 
         fragments: dict[int, dict] = {}
         stripper = _ThinkStripper()
+        pending = ""  # holds leading reasoning until its `</think>` arrives
+        seen_answer = not self.think_prefix
         while True:
             item = await asyncio.to_thread(q.get)
             if item is None:
@@ -410,9 +431,19 @@ class OpenAICompatProvider(LLMProvider):
             delta = choices[0].get("delta") or {}
             content = delta.get("content")
             if content:
-                cleaned = stripper.feed(content)
-                if cleaned:
-                    yield cleaned
+                if not seen_answer:
+                    pending += content
+                    idx = pending.find("</think>")
+                    if idx == -1:
+                        content = ""
+                    else:
+                        seen_answer = True
+                        content = pending[idx + len("</think>"):].lstrip()
+                        pending = ""
+                if content:
+                    cleaned = stripper.feed(content)
+                    if cleaned:
+                        yield cleaned
             for tc in delta.get("tool_calls") or []:
                 idx = tc.get("index", 0)
                 slot = fragments.setdefault(idx, {"id": "", "name": "", "args": ""})
@@ -447,6 +478,8 @@ class OpenAICompatProvider(LLMProvider):
         self._last_tool_calls = calls
 
     def parse_output(self, raw: str, tools: list[ToolSpec]) -> LLMResponse:
+        if self.think_prefix:
+            raw = _strip_leading_reasoning(raw)
         calls = list(self._last_tool_calls)
         if calls:
             text = _strip_think(raw)
