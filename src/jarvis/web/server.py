@@ -9,6 +9,7 @@ import threading
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
+from urllib.parse import urlsplit
 
 import numpy as np
 
@@ -507,32 +508,34 @@ def _handler_for(service: JarvisService, index_html: str):
             self._send(code, json.dumps(payload).encode("utf-8"), "application/json")
 
         def do_GET(self):  # noqa: N802
-            if self.path in ("/", "/index.html"):
+            path = urlsplit(self.path).path
+            if path in ("/", "/index.html"):
                 self._send(200, index_html.encode("utf-8"), "text/html; charset=utf-8")
-            elif self.path == "/health":
+            elif path == "/health":
                 self._json(200, {"ok": True})
-            elif self.path == "/settings":
+            elif path == "/settings":
                 self._json(200, service.get_settings())
             else:
                 self._send(404, b"not found", "text/plain")
 
         def do_POST(self):  # noqa: N802
+            path = urlsplit(self.path).path
             length = int(self.headers.get("Content-Length", 0))
             data = self.rfile.read(length)
             try:
-                if self.path == "/chat":
+                if path == "/chat":
                     payload = json.loads(data.decode("utf-8") or "{}")
                     text = (payload.get("text") or "").strip()
                     if not text:
                         self._json(400, {"error": "empty text"})
                         return
                     self._json(200, service._runner.submit(service.chat(text)))
-                elif self.path == "/voice":
+                elif path == "/voice":
                     self._json(200, service._runner.submit(service.voice(data)))
-                elif self.path == "/speak":
+                elif path == "/speak":
                     payload = json.loads(data.decode("utf-8") or "{}")
                     self._json(200, {"audio": service.speak(payload.get("text") or "")})
-                elif self.path == "/settings":
+                elif path == "/settings":
                     payload = json.loads(data.decode("utf-8") or "{}")
                     self._json(200, service.apply_settings(payload))
                 else:

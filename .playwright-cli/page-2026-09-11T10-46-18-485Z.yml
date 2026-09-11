@@ -1,0 +1,4 @@
+- generic [ref=e2]:
+  - text: Say hello.
+  - button "Talk" [ref=e3] [cursor=pointer]:
+    - img [ref=e4]

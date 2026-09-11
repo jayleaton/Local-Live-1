@@ -1,0 +1,16 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - navigation [ref=e4]:
+      - generic [ref=e5]: Ready
+      - button "Chat" [ref=e6] [cursor=pointer]:
+        - img [ref=e7]
+        - generic [ref=e9]: Chat
+      - button "Keyboard" [ref=e10] [cursor=pointer]:
+        - img [ref=e11]
+        - generic [ref=e14]: Keyboard
+      - button "Settings" [ref=e15] [cursor=pointer]:
+        - img [ref=e16]
+        - generic [ref=e19]: Settings
+    - text: Say hello.
+  - button "Talk" [ref=e20] [cursor=pointer]:
+    - img [ref=e21]

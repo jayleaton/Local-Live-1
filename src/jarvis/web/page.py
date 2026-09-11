@@ -7,39 +7,55 @@ INDEX_HTML = r"""<!doctype html>
 <style>
   :root{
     color-scheme: light dark;
-    --bg:#f4f5f7; --card:#ffffff; --fg:#1a1c1f; --muted:#6b7280;
-    --line:#e3e5e9; --accent:#2f6fed; --user:#2f6fed; --bot:#eef1f6;
+    --bg:#eceef1; --card:#ffffff; --fg:#1b1e23; --muted:#6b7280; --line:#e4e6ea;
+    --accent:#2f6fed; --user:#2f6fed; --bot:#f1f2f5; --chip:#f4f5f7;
   }
   @media (prefers-color-scheme: dark){
-    :root{ --bg:#111315; --card:#17191d; --fg:#e8eaed; --muted:#9aa0a6; --line:#26282d; --accent:#5b8cff; --user:#2f5fd0; --bot:#22252b; }
+    :root{ --bg:#1e1f22; --card:#2a2b2f; --fg:#e8eaed; --muted:#9aa0a6; --line:#3a3c41;
+           --accent:#4a90ff; --user:#2f5fd0; --bot:#33353a; --chip:#3a3c41; }
   }
+  :root[data-theme="light"]{ --bg:#eceef1; --card:#ffffff; --fg:#1b1e23; --muted:#6b7280; --line:#e4e6ea;
+           --accent:#2f6fed; --user:#2f6fed; --bot:#f1f2f5; --chip:#f4f5f7; }
+  :root[data-theme="dark"]{ --bg:#1e1f22; --card:#2a2b2f; --fg:#e8eaed; --muted:#9aa0a6; --line:#3a3c41;
+           --accent:#4a90ff; --user:#2f5fd0; --bot:#33353a; --chip:#3a3c41; }
   *{ box-sizing:border-box; }
   html,body{ height:100%; }
-  body{ margin:0; font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:transparent; color:var(--fg); }
-  #app{ position:fixed; right:16px; bottom:16px; z-index:20; }
-  .pill{ display:flex; align-items:center; gap:10px; background:var(--card); border:1px solid var(--line); border-radius:999px; padding:8px 12px 8px 14px; }
-  .dot{ width:9px; height:9px; border-radius:50%; background:var(--muted); flex:0 0 auto; }
-  .dot.listening{ background:#22a06b; }
-  .dot.thinking{ background:#d99100; }
-  .dot.speaking{ background:var(--accent); }
-  .dot.error{ background:#c0392b; }
-  .mic{ display:inline-flex; align-items:center; justify-content:center; width:44px; height:44px; border-radius:50%;
-        border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer; font-size:18px; }
-  .mic.active{ background:var(--accent); color:#fff; border-color:var(--accent); }
-  .iconbtn{ display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px; border-radius:8px;
-        border:1px solid transparent; background:transparent; color:var(--muted); cursor:pointer; font-size:15px; }
-  .iconbtn:hover{ background:var(--bot); color:var(--fg); }
-  .iconbtn.on{ color:var(--fg); border-color:var(--line); }
-  .panel{ display:none; flex-direction:column; width:380px; max-width:calc(100vw - 24px); height:560px; max-height:calc(100vh - 40px);
-        background:var(--card); border:1px solid var(--line); border-radius:16px; overflow:hidden; }
-  #app[data-expanded="true"] .panel{ display:flex; }
-  #app[data-expanded="true"] .pill{ display:none; }
-  .head{ display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid var(--line); }
-  .head .title{ font-weight:600; font-size:14px; }
-  .head .status{ margin-left:auto; font-size:12px; color:var(--muted); margin-right:4px; }
-  .log{ flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:8px; }
+  body{ margin:0; font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; color:var(--fg);
+        background:var(--bg); }
+  #app{ position:fixed; left:50%; bottom:28px; transform:translateX(-50%); display:flex; flex-direction:column;
+        align-items:center; gap:10px; z-index:20; }
+  .mic{ width:76px; height:76px; border-radius:50%; border:1.5px solid var(--line); background:var(--card);
+        color:var(--accent); display:flex; align-items:center; justify-content:center; cursor:pointer;
+        transition:background .15s,border-color .15s,color .15s; }
+  .mic svg{ width:30px; height:30px; }
+  #app[data-state="listening"] .mic, #app[data-state="thinking"] .mic, #app[data-state="speaking"] .mic{
+        background:var(--accent); border-color:var(--accent); color:#fff; }
+  .status{ display:none; font-size:15px; color:var(--fg); }
+  #app[data-view="menu"] .status{ display:block; }
+
+  .pop{ position:absolute; bottom:96px; left:50%; transform:translateX(-50%);
+        background:var(--card); border:1px solid var(--line); border-radius:16px; padding:14px;
+        width:300px; max-width:calc(100vw - 32px); }
+  .pop[hidden]{ display:none; }
+  .pop::after{ content:""; position:absolute; bottom:-7px; left:50%; transform:translateX(-50%) rotate(45deg);
+        width:12px; height:12px; background:var(--card); border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
+  .view{ display:none; }
+  #app[data-view="menu"] .view-menu{ display:flex; flex-direction:column; gap:4px; }
+  #app[data-view="chat"] .view-chat{ display:flex; flex-direction:column; }
+  #app[data-view="input"] .view-input{ display:block; }
+  #app[data-view="settings"] .view-settings{ display:flex; flex-direction:column; gap:9px; }
+
+  .row{ display:flex; align-items:center; gap:12px; padding:11px 12px; border:0; background:transparent;
+        color:var(--fg); border-radius:10px; cursor:pointer; font-size:15px; text-align:left; width:100%; }
+  .row:hover{ background:var(--chip); }
+  .row svg{ width:20px; height:20px; color:var(--fg); flex:0 0 auto; }
+
+  .vhead{ display:flex; align-items:center; gap:8px; margin-bottom:8px; font-weight:600; font-size:14px; }
+  .vhead button{ border:0; background:transparent; color:var(--muted); cursor:pointer; font-size:18px; padding:0 4px; }
+
+  .log{ display:flex; flex-direction:column; gap:8px; max-height:44vh; overflow-y:auto; padding:2px; }
   .log:empty::before{ content:"Say hello."; color:var(--muted); font-size:13px; }
-  .msg{ max-width:82%; padding:8px 11px; border-radius:12px; white-space:pre-wrap; word-break:break-word; font-size:14px; }
+  .msg{ max-width:88%; padding:8px 11px; border-radius:12px; white-space:pre-wrap; word-break:break-word; font-size:14px; }
   .user{ align-self:flex-end; background:var(--user); color:#fff; }
   .partial{ align-self:flex-end; background:var(--user); color:#fff; opacity:.7; font-style:italic; }
   .bot{ align-self:flex-start; background:var(--bot); }
@@ -47,74 +63,65 @@ INDEX_HTML = r"""<!doctype html>
   .tool{ display:inline-block; border:1px solid var(--line); border-radius:6px; padding:0 6px; margin-right:4px; }
   .caret::after{ content:"▋"; color:var(--accent); animation:blink 1s steps(1) infinite; }
   @keyframes blink{ 50%{ opacity:0; } }
-  .composer{ display:none; gap:8px; padding:10px 12px; border-top:1px solid var(--line); }
-  #app[data-keyboard="true"] .composer{ display:flex; }
-  .composer input{ flex:1; min-width:0; background:transparent; border:1px solid var(--line); color:var(--fg); border-radius:9px; padding:9px 11px; outline:none; }
-  .composer button{ border:1px solid var(--line); background:transparent; color:var(--fg); border-radius:9px; padding:9px 12px; cursor:pointer; }
-  .dock{ display:flex; align-items:center; justify-content:center; gap:14px; padding:12px; border-top:1px solid var(--line); }
-  .sheet{ position:absolute; right:0; bottom:76px; width:340px; max-width:calc(100vw - 24px); background:var(--card);
-        border:1px solid var(--line); border-radius:14px; padding:14px; display:none; flex-direction:column; gap:10px; }
-  .sheet.open{ display:flex; }
-  .sheet label{ display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--muted); }
-  .sheet select,.sheet input{ background:var(--bg); border:1px solid var(--line); color:var(--fg); border-radius:8px; padding:7px 9px; }
-  .sheet .row{ display:flex; gap:8px; }
-  .sheet .row button{ flex:1; border:1px solid var(--line); background:transparent; color:var(--fg); border-radius:9px; padding:8px; cursor:pointer; }
-  .hint{ margin:0 0 10px; text-align:center; font-size:11px; color:var(--muted); }
-  svg{ width:16px; height:16px; display:block; }
+
+  form.composer{ display:flex; gap:8px; margin-top:10px; }
+  form.composer input{ flex:1; min-width:0; background:transparent; border:1px solid var(--line); color:var(--fg);
+        border-radius:10px; padding:9px 11px; outline:none; }
+  form.composer input:focus{ border-color:var(--accent); }
+  form.composer button{ border:1px solid var(--line); background:transparent; color:var(--fg); border-radius:10px; padding:9px 12px; cursor:pointer; }
+
+  .view-settings label{ display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--muted); }
+  .view-settings select,.view-settings input{ background:var(--bg); border:1px solid var(--line); color:var(--fg);
+        border-radius:8px; padding:7px 9px; }
+  .btnrow{ display:flex; gap:8px; }
+  .btnrow button{ flex:1; border:1px solid var(--line); background:transparent; color:var(--fg); border-radius:9px; padding:8px; cursor:pointer; }
 </style>
 </head>
 <body>
-<div id="app" data-expanded="false" data-keyboard="false" data-state="idle">
+<div id="app" data-view="none" data-state="idle">
+  <div class="pop" id="pop" hidden>
+    <nav class="view view-menu">
+      <span class="status" id="status">Ready</span>
+      <button class="row" data-nav="chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M21 12a8 8 0 0 1-11.5 7.2L3 21l1.8-6.5A8 8 0 1 1 21 12z"/></svg><span>Chat</span></button>
+      <button class="row" data-nav="input"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M9 10h.01M12 10h.01M15 10h.01M18 10h.01M8 14h8"/></svg><span>Keyboard</span></button>
+      <button class="row" data-nav="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2 2 2 0 1 1-4 0 1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 15a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.5-2.6l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 4.6a2 2 0 1 1 4 0 1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 11a2 2 0 1 1 0 4z"/></svg><span>Settings</span></button>
+    </nav>
 
-  <div class="pill" id="pill">
-    <span class="dot" id="pill-dot"></span>
-    <button class="mic" id="pill-mic" aria-label="Talk">◉</button>
+    <section class="view view-chat">
+      <div class="vhead"><button data-nav="menu">&#8249;</button><span>Chat</span></div>
+      <div class="log" id="log"></div>
+      <form class="composer" id="composer" autocomplete="off"><input id="text" type="text" placeholder="Message Jarvis" /><button type="submit">Send</button></form>
+    </section>
+
+    <section class="view view-input">
+      <form class="composer" id="quickform" autocomplete="off"><input id="quicktext" type="text" placeholder="Type a message…" /><button type="submit">Send</button></form>
+    </section>
+
+    <section class="view view-settings">
+      <div class="vhead"><button data-nav="menu">&#8249;</button><span>Settings</span></div>
+      <label>Response brain <select id="s-mode"><option value="local">On-device</option><option value="api">API</option></select></label>
+      <label id="s-local-row">On-device model <select id="s-local"></select></label>
+      <label>TTS engine <select id="s-tts-backend"><option value="chatterbox">Chatterbox (natural)</option><option value="kokoro">Kokoro (fast)</option></select></label>
+      <label>Voice <select id="s-voice"></select></label>
+      <label>Max spoken sentences <input id="s-cap" type="number" min="1" max="10" /></label>
+      <div class="btnrow"><button id="s-save">Save</button><button id="s-preview">Preview</button></div>
+    </section>
   </div>
 
-  <section class="panel">
-    <header class="head">
-      <button class="iconbtn" id="btn-chat" title="Chat" aria-label="Chat">☰</button>
-      <span class="title">Jarvis</span>
-      <span class="status" id="status">idle</span>
-      <button class="iconbtn" id="btn-keyboard" title="Keyboard" aria-label="Keyboard">⌨</button>
-      <button class="iconbtn" id="btn-settings" title="Settings" aria-label="Settings">⚙</button>
-      <button class="iconbtn" id="btn-collapse" title="Collapse" aria-label="Collapse">⌄</button>
-    </header>
-    <div class="log" id="log"></div>
-    <form class="composer" id="composer" autocomplete="off">
-      <input id="text" type="text" placeholder="Message Jarvis" />
-      <button type="submit">Send</button>
-    </form>
-    <div class="dock">
-      <button class="mic" id="mic" aria-label="Talk">◉</button>
-    </div>
-    <p class="hint" id="hint">Tap the mic and speak</p>
-
-    <div class="sheet" id="sheet">
-      <label>Response brain
-        <select id="s-mode"><option value="local">On-device</option><option value="api">API</option></select>
-      </label>
-      <label id="s-local-row">On-device model <select id="s-local"></select></label>
-      <label>Voice <select id="s-voice"></select></label>
-      <label>TTS engine <select id="s-tts-backend"><option value="chatterbox">Chatterbox (natural)</option><option value="kokoro">Kokoro (fast)</option></select></label>
-      <label>Max spoken sentences <input id="s-cap" type="number" min="1" max="10" /></label>
-      <div class="row">
-        <button id="s-save">Save</button>
-        <button id="s-preview">Preview voice</button>
-      </div>
-      <div class="row"><button id="s-close">Close settings</button></div>
-    </div>
-  </section>
+  <button class="mic" id="mic" aria-label="Talk">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4"/></svg>
+  </button>
 </div>
 
 <script>
-const app=document.getElementById('app'), log=document.getElementById('log');
-const statusEl=document.getElementById('status'), dot=document.getElementById('pill-dot');
-const micBtn=document.getElementById('mic'), pillMic=document.getElementById('pill-mic');
-const sheet=document.getElementById('sheet'), composer=document.getElementById('composer'), input=document.getElementById('text');
+const app=document.getElementById('app'), pop=document.getElementById('pop'), log=document.getElementById('log');
+const statusEl=document.getElementById('status'), micBtn=document.getElementById('mic');
+const composer=document.getElementById('composer'), input=document.getElementById('text');
+const quickform=document.getElementById('quickform'), quicktext=document.getElementById('quicktext');
 
 const WS_PORT = location.protocol==='https:' ? 8444 : 8767;
 const WS_URL = (location.protocol==='https:'?'wss':'ws')+'://'+location.hostname+':'+WS_PORT;
+const LABELS={idle:'Ready',connecting:'Connecting…',listening:'Listening',thinking:'Thinking',speaking:'Speaking'};
 
 let ws=null,micStream=null,audioCtx=null,micSrc=null,procNode=null,muteGain=null;
 let streaming=false,partialBubble=null,partialText="";
@@ -122,39 +129,36 @@ let botBubble=null,botText="",userCommitted=false;
 let spoke=false,silenceMs=0,awaitingFinal=false;
 let audioQueue=[],playing=false,currentAudio=null;
 
-function state(s,label){ app.dataset.state=s; statusEl.textContent=label||s; dot.className='dot '+s; }
+function state(s){ app.dataset.state=s; statusEl.textContent=LABELS[s]||s; }
+function view(v){ app.dataset.view=v; pop.hidden=(v==='none'); if(v==='input') quicktext.focus(); }
 function el(c){const d=document.createElement('div');d.className='msg '+c;return d;}
 function addUser(t){const d=el('user');d.textContent=t;log.appendChild(d);log.scrollTop=log.scrollHeight;return d;}
 function ensureBot(){ if(botBubble) return botBubble; botBubble=el('bot'); const m=document.createElement('div');m.className='meta';m.style.display='none';botBubble._meta=m;botBubble.appendChild(m); const s=document.createElement('span');botBubble._s=s;botBubble.appendChild(s); botBubble.classList.add('caret'); log.appendChild(botBubble); log.scrollTop=log.scrollHeight; return botBubble; }
 function appendBot(t){ const b=ensureBot(); botText+=t; b._s.textContent=botText; log.scrollTop=log.scrollHeight; }
-function addToolTool(n){ const b=ensureBot(); b._meta.style.display='block'; const s=document.createElement('span'); s.className='tool'; s.textContent=n; b._meta.appendChild(s); }
+function addTool(n){ const b=ensureBot(); b._meta.style.display='block'; const s=document.createElement('span'); s.className='tool'; s.textContent=n; b._meta.appendChild(s); }
 function finishBot(){ if(botBubble) botBubble.classList.remove('caret'); }
 function resetTurn(){ partialBubble=null; partialText=""; botBubble=null; botText=""; userCommitted=false; }
 function setPartial(t){ if(!partialBubble){ partialBubble=el('partial'); log.appendChild(partialBubble); } partialBubble.textContent=t; partialText=t; log.scrollTop=log.scrollHeight; }
 function commitPartial(){ if(partialBubble && partialText.trim()){ partialBubble.remove(); addUser(partialText.trim()); userCommitted=true; } else if(partialBubble){ partialBubble.remove(); } partialBubble=null; partialText=""; }
-
 function enqueueAudio(b64){ if(!b64) return; audioQueue.push(b64); if(!playing) playNext(); }
-function playNext(){ if(!audioQueue.length){ playing=false; if(streaming&&!botBubble) state('listening','listening'); return; } playing=true; state('speaking','speaking'); currentAudio=new Audio('data:audio/wav;base64,'+audioQueue.shift()); currentAudio.onended=playNext; currentAudio.play().catch(()=>{playing=false;}); }
+function playNext(){ if(!audioQueue.length){ playing=false; if(streaming&&!botBubble) state('listening'); return; } playing=true; state('speaking'); currentAudio=new Audio('data:audio/wav;base64,'+audioQueue.shift()); currentAudio.onended=playNext; currentAudio.play().catch(()=>{playing=false;}); }
 function stopAudio(){ audioQueue=[]; playing=false; if(currentAudio){currentAudio.pause(); currentAudio=null;} }
 
-async function sendText(t){ if(!t.trim()) return; resetTurn(); addUser(t); userCommitted=true; ensureBot(); state('thinking','thinking');
+async function sendText(t){ if(!t.trim()) return; resetTurn(); addUser(t); userCommitted=true; ensureBot(); state('thinking');
   try{ const r=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})}); const d=await r.json();
-    if(d.error) appendBot('Error: '+d.error); else { appendBot(d.reply||''); (d.tools||[]).forEach(addToolTool); enqueueAudio(d.audio); } }
+    if(d.error) appendBot('Error: '+d.error); else { appendBot(d.reply||''); (d.tools||[]).forEach(addTool); enqueueAudio(d.audio); } }
   catch(e){ appendBot('Error: '+e.message); }
-  finishBot(); resetTurn(); if(!playing) state('idle','idle'); }
-
-function onFinalize(){ commitPartial(); if(userCommitted){ ensureBot(); state('thinking','thinking'); } try{ ws.send(JSON.stringify({type:'finalize'})); }catch(e){} }
-
+  finishBot(); resetTurn(); if(!playing) state('idle'); }
+function onFinalize(){ commitPartial(); if(userCommitted){ ensureBot(); state('thinking'); } try{ ws.send(JSON.stringify({type:'finalize'})); }catch(e){} }
 function onWs(ev){ const d=JSON.parse(ev.data);
   if(d.type==='partial'){ stopAudio(); if(botBubble){ finishBot(); botBubble=null; botText=""; } setPartial(d.text); }
-  else if(d.type==='transcript'){ if(!userCommitted&&d.text.trim()){ commitPartial(); addUser(d.text.trim()); userCommitted=true; } else commitPartial(); ensureBot(); state('thinking','thinking'); }
-  else if(d.type==='thinking'){ ensureBot(); state('thinking','thinking'); }
-  else if(d.type==='assistant_delta'){ appendBot(d.text); state('speaking','speaking'); }
-  else if(d.type==='tool'){ addToolTool(d.name); }
+  else if(d.type==='transcript'){ if(!userCommitted&&d.text.trim()){ commitPartial(); addUser(d.text.trim()); userCommitted=true; } else commitPartial(); ensureBot(); state('thinking'); }
+  else if(d.type==='thinking'){ ensureBot(); state('thinking'); }
+  else if(d.type==='assistant_delta'){ appendBot(d.text); state('speaking'); }
+  else if(d.type==='tool'){ addTool(d.name); }
   else if(d.type==='audio'){ enqueueAudio(d.audio); }
-  else if(d.type==='done'){ if(!botText&&d.text) appendBot(d.text); finishBot(); resetTurn(); if(!playing) state(streaming?'listening':'idle', streaming?'listening':'idle'); }
-  else if(d.type==='speech_started'){ stopAudio(); }
-}
+  else if(d.type==='done'){ if(!botText&&d.text) appendBot(d.text); finishBot(); resetTurn(); if(!playing) state(streaming?'listening':'idle'); }
+  else if(d.type==='speech_started'){ stopAudio(); } }
 
 function startPCM(){ audioCtx=new (window.AudioContext||window.webkitAudioContext)({sampleRate:16000}); micSrc=audioCtx.createMediaStreamSource(micStream);
   procNode=audioCtx.createScriptProcessor(2048,1,1); muteGain=audioCtx.createGain(); muteGain.gain.value=0;
@@ -164,30 +168,23 @@ function startPCM(){ audioCtx=new (window.AudioContext||window.webkitAudioContex
     if(rms>0.012){ spoke=true; silenceMs=0; awaitingFinal=false; } else if(spoke){ silenceMs+=128; if(silenceMs>450&&!awaitingFinal){ awaitingFinal=true; spoke=false; onFinalize(); } }
     ws.send(pcm.buffer); };
   micSrc.connect(procNode); procNode.connect(muteGain); muteGain.connect(audioCtx.destination); }
-
-async function startMic(){ if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){ addUser('Microphone needs HTTPS. Open '+location.href.replace(/^http:/,'https:')+'.'); return; }
+async function startMic(){ if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){ alert('Microphone needs HTTPS. Open '+location.href.replace(/^http:/,'https:')+'.'); return; }
   try{ micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}}); }
-  catch(e){ addUser('Microphone unavailable: '+e.message); return; }
-  streaming=true; micBtn.classList.add('active'); pillMic.classList.add('active'); state('connecting','connecting');
-  try{ ws=new WebSocket(WS_URL); ws.binaryType='arraybuffer'; ws.onopen=()=>{ state('listening','listening'); startPCM(); }; ws.onmessage=onWs; ws.onerror=()=>addUser('(streaming unavailable)'); }
-  catch(e){ addUser('Streaming unavailable: '+e.message); } }
-
+  catch(e){ alert('Microphone unavailable: '+e.message); return; }
+  streaming=true; if(app.dataset.view==='none') view('menu'); state('connecting');
+  try{ ws=new WebSocket(WS_URL); ws.binaryType='arraybuffer'; ws.onopen=()=>{ state('listening'); startPCM(); }; ws.onmessage=onWs; ws.onerror=()=>{}; }
+  catch(e){ alert('Streaming unavailable: '+e.message); } }
 function stopMic(){ streaming=false; if(ws){ try{ws.send(JSON.stringify({type:'reset'}));ws.close();}catch(e){} ws=null; }
   if(procNode){procNode.disconnect();procNode.onaudioprocess=null;procNode=null;} if(micSrc){micSrc.disconnect();micSrc=null;}
   if(muteGain){muteGain.disconnect();muteGain=null;} if(audioCtx){audioCtx.close();audioCtx=null;} if(micStream){micStream.getTracks().forEach(t=>t.stop());micStream=null;}
-  micBtn.classList.remove('active'); pillMic.classList.remove('active'); state('idle','idle'); stopAudio(); }
+  state('idle'); stopAudio(); }
 
-function toggleMic(){ streaming?stopMic():startMic(); }
-micBtn.onclick=toggleMic; pillMic.onclick=()=>{ app.dataset.expanded='true'; toggleMic(); };
-
-document.getElementById('btn-chat').onclick=()=>{ app.dataset.expanded='true'; };
-document.getElementById('btn-collapse').onclick=()=>{ app.dataset.expanded='false'; sheet.classList.remove('open'); };
-document.getElementById('btn-keyboard').onclick=()=>{ const on=app.dataset.keyboard==='true'; app.dataset.keyboard=on?'false':'true'; document.getElementById('btn-keyboard').classList.toggle('on',!on); if(!on) input.focus(); };
-document.getElementById('btn-settings').onclick=()=>{ sheet.classList.toggle('open'); if(sheet.classList.contains('open')) loadSettings(); };
-document.getElementById('s-close').onclick=()=>sheet.classList.remove('open');
-document.getElementById('s-mode').onchange=()=>{ document.getElementById('s-local-row').style.display=document.getElementById('s-mode').value==='local'?'flex':'none'; };
-document.getElementById('s-tts-backend').onchange=()=>{ document.getElementById('s-voice').disabled=document.getElementById('s-tts-backend').value==='chatterbox'; };
+micBtn.onclick=()=>{ streaming?stopMic():startMic(); };
+document.querySelectorAll('[data-nav]').forEach(b=>b.onclick=()=>{ view(b.dataset.nav); if(b.dataset.nav==='settings') loadSettings(); });
 composer.onsubmit=e=>{ e.preventDefault(); const t=input.value; input.value=''; sendText(t); };
+quickform.onsubmit=e=>{ e.preventDefault(); const t=quicktext.value; quicktext.value=''; sendText(t); };
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') view('none'); });
+document.addEventListener('click',e=>{ if(app.dataset.view!=='none' && !app.contains(e.target)) view('none'); });
 
 async function loadSettings(){ const d=await (await fetch('/settings')).json();
   document.getElementById('s-mode').value=d.response_mode;
@@ -198,10 +195,16 @@ async function loadSettings(){ const d=await (await fetch('/settings')).json();
   document.getElementById('s-cap').value=d.max_spoken_sentences; }
 async function saveSettings(){ const body={ response_mode:document.getElementById('s-mode').value, local_model:document.getElementById('s-local').value, tts_backend:document.getElementById('s-tts-backend').value, tts_voice:document.getElementById('s-voice').value, max_spoken_sentences:parseInt(document.getElementById('s-cap').value||'3',10) };
   try{ await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); }catch(e){} }
+document.getElementById('s-mode').onchange=()=>{ document.getElementById('s-local-row').style.display=document.getElementById('s-mode').value==='local'?'flex':'none'; };
+document.getElementById('s-tts-backend').onchange=()=>{ document.getElementById('s-voice').disabled=document.getElementById('s-tts-backend').value==='chatterbox'; };
 document.getElementById('s-save').onclick=saveSettings;
 document.getElementById('s-preview').onclick=async()=>{ await saveSettings(); try{ const r=await (await fetch('/speak',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'Hi, this is how I sound.'})})).json(); enqueueAudio(r.audio); }catch(e){} };
-
 fetch('/health').catch(()=>{});
+// Preview hooks (docs/screenshots): ?view=menu|chat|input|settings&state=listening&theme=dark
+const _q=new URLSearchParams(location.search);
+if(_q.get('theme')) document.documentElement.dataset.theme=_q.get('theme');
+if(_q.get('state')) state(_q.get('state'));
+if(_q.get('view')) view(_q.get('view'));
 </script>
 </body>
 </html>
