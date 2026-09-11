@@ -1,6 +1,6 @@
 {
   "name": "@jarvis/desktop",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Local-Live-1 desktop app (Electron): all-in-one client + local backend manager",
   "author": "Local-Live-1 contributors",
@@ -16,25 +16,62 @@
   "build": {
     "appId": "ai.jarvis.desktop",
     "productName": "Local-Live-1",
-    "files": ["main.js", "preload.js"],
+    "files": [
+      "main.js",
+      "preload.js"
+    ],
     "extraResources": [
-      { "from": "python", "to": "backend/python" },
-      { "from": "bin", "to": "backend/bin" },
-      { "from": "../../src", "to": "backend/src" },
-      { "from": "../../servers", "to": "backend/servers" },
-      { "from": "../../scripts", "to": "backend/scripts" },
-      { "from": "../../pyproject.toml", "to": "backend/pyproject.toml" },
-      { "from": "../../uv.lock", "to": "backend/uv.lock" },
-      { "from": "../../jarvis.config.example.json", "to": "backend/jarvis.config.example.json" }
+      {
+        "from": "python",
+        "to": "backend/python"
+      },
+      {
+        "from": "bin",
+        "to": "backend/bin"
+      },
+      {
+        "from": "../../src",
+        "to": "backend/src"
+      },
+      {
+        "from": "../../servers",
+        "to": "backend/servers"
+      },
+      {
+        "from": "../../scripts",
+        "to": "backend/scripts"
+      },
+      {
+        "from": "../../pyproject.toml",
+        "to": "backend/pyproject.toml"
+      },
+      {
+        "from": "../../uv.lock",
+        "to": "backend/uv.lock"
+      },
+      {
+        "from": "../../jarvis.config.example.json",
+        "to": "backend/jarvis.config.example.json"
+      }
     ],
     "mac": {
       "category": "public.app-category.productivity",
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Local-Live-1 uses the microphone for voice input."
       }
     },
-    "linux": { "target": "AppImage" },
-    "win": { "target": ["nsis", "zip"] }
+    "linux": {
+      "target": "AppImage"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    }
   }
 }

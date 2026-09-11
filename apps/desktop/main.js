@@ -69,6 +69,11 @@ function writeBackendConfig() {
     base = {};
   }
   base.response_mode = cfg.brain;
+  base.voice = base.voice || {};
+  // Nemotron/Chatterbox sidecars are macOS-oriented; the bundled Windows/Linux
+  // runtime falls back to sherpa ASR + Kokoro TTS.
+  base.voice.streaming_backend = isMac ? "nemotron" : "sherpa";
+  base.voice.tts_backend = isMac ? "chatterbox" : "kokoro";
   base.model = base.model || {};
   if (cfg.baseUrl) base.model.base_url = cfg.baseUrl; // e.g. http://127.0.0.1:8080/v1 (llama.cpp/vLLM)
   if (cfg.model) base.model.model = cfg.model;

@@ -417,9 +417,12 @@ class JarvisService:
 
             http_base = self.cfg.voice.nemo_url.replace("ws://", "http://").replace("wss://", "https://")
             if not is_ready(http_base):
-                await asyncio.to_thread(
-                    ensure_nemo_server, self.cfg.voice.nemo_url, self.cfg.voice.nemo_model, log_path="logs/nemo.log"
-                )
+                try:
+                    await asyncio.to_thread(
+                        ensure_nemo_server, self.cfg.voice.nemo_url, self.cfg.voice.nemo_model, log_path="logs/nemo.log"
+                    )
+                except Exception:
+                    pass
             try:
                 nws = await websockets.connect(url, max_size=None)
             except Exception:
@@ -682,11 +685,16 @@ def run_server(
     if streaming:
         backend = cfg.voice.streaming_backend
         if backend == "nemotron":
-            from jarvis.stt.nemotron_server import ensure_nemo_server
+            from jarvis.stt.nemotron_server import ensure_nemo_server, find_binary
 
-            proc = ensure_nemo_server(cfg.voice.nemo_url, cfg.voice.nemo_model, log_path="logs/nemo.log")
-            state = "started" if proc else "reused"
-            print(f"  ASR: nemotron-3.5 streaming ({state}) @ {cfg.voice.nemo_url}")
+            try:
+                if find_binary() is None:
+                    raise RuntimeError("nemo-speech not installed")
+                proc = ensure_nemo_server(cfg.voice.nemo_url, cfg.voice.nemo_model, log_path="logs/nemo.log")
+                print(f"  ASR: nemotron-3.5 streaming ({'started' if proc else 'reused'}) @ {cfg.voice.nemo_url}")
+            except Exception as e:  # noqa: BLE001 - Nemotron is optional
+                cfg.voice.streaming_backend = "sherpa"
+                print(f"  ASR: nemotron unavailable ({e}); using sherpa-onnx zipformer")
         else:
             print("  ASR: sherpa-onnx streaming zipformer")
         ws_port = cfg.voice.streaming_ws_port or (chosen + 1)

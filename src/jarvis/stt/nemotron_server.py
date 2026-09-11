@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import time
 import urllib.request
@@ -16,10 +17,17 @@ BIN_CANDIDATES = [
 
 
 def find_binary() -> Optional[str]:
+    """Return a usable nemo-speech path, or None. Never returns a path that doesn't exist."""
     for candidate in BIN_CANDIDATES:
-        if candidate and (os.path.sep in candidate or candidate == "nemo-speech"):
-            if candidate == "nemo-speech" or os.path.exists(candidate):
+        if not candidate:
+            continue
+        if os.path.dirname(candidate):  # explicit path
+            if os.path.exists(candidate):
                 return candidate
+        else:  # bare name: resolve on PATH
+            found = shutil.which(candidate)
+            if found:
+                return found
     return None
 
 
@@ -38,10 +46,11 @@ def ensure_nemo_server(
     log_path: str = "logs/nemo.log",
     timeout: float = 120.0,
 ) -> Optional[subprocess.Popen]:
-    """Start `nemo-speech serve` if it isn't already reachable.
+    """Start `nemo-speech serve` if it's installed and not already reachable.
 
-    Returns the Popen handle if we started it, else None (already running or
-    binary missing).
+    Returns the Popen if we started it, else None (already running, or not
+    installed). Never raises: Nemotron is optional and must not take down the
+    backend when absent.
     """
     http_base = ws_url.replace("ws://", "http://").replace("wss://", "https://")
     if is_ready(http_base):
@@ -52,14 +61,23 @@ def ensure_nemo_server(
     host = http_base.split("//", 1)[1].split(":")[0]
     port = http_base.rstrip("/").rsplit(":", 1)[-1]
 
-    Path(log_path).parent.mkdir(parents=True, exist_ok=True)
-    log = open(log_path, "ab")  # noqa: SIM115 - kept open for the child process
-    proc = subprocess.Popen(
-        [binary, "serve", "--asr-model", model, "--host", host, "--port", str(port)],
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+    log: object
+    try:
+        Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        log = open(log_path, "ab")  # noqa: SIM115 - kept open for the child process
+    except Exception:
+        log = subprocess.DEVNULL
+
+    kwargs: dict = {"stdout": log, "stderr": subprocess.STDOUT}
+    if os.name == "nt":
+        kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        proc = subprocess.Popen([binary, "serve", "--asr-model", model, "--host", host, "--port", str(port)], **kwargs)
+    except Exception:
+        return None
+
     deadline = time.time() + timeout
     while time.time() < deadline:
         if proc.poll() is not None:
