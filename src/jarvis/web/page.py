@@ -238,7 +238,7 @@ async function loadAsr(){ try{ asrCatalog=await (await fetch('/asr/models')).jso
 function updateAsrActions(){ const d=asrCatalog||{}, sel=document.getElementById('s-asr').value;
   const install=document.getElementById('s-asr-install'), dl=document.getElementById('s-asr-download'), actions=document.getElementById('asr-actions'), info=document.getElementById('asr-info');
   install.style.display = d.runtime_installed?'none':'block';
-  actions.style.display = (d.runtime_installed||sel.indexOf('nemo:')===0)?'flex':'none';
+  actions.style.display = (!d.runtime_installed||sel.indexOf('nemo:')===0)?'flex':'none';
   let need=false, m=null;
   if(d.runtime_installed&&sel.indexOf('nemo:')===0){ m=(d.models||[]).find(x=>'nemo:'+x.name===sel); need=!!m&&!m.downloaded; }
   dl.style.display = need?'block':'none';
