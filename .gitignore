@@ -1,0 +1,38 @@
+# Python
+.venv/
+.venv-tts/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Local runtime state / secrets
+jarvis.config.json
+.env
+.env.*
+!.env.example
+logs/
+*.log
+*.sqlite
+*.sqlite-*
+lib/
+
+# Models / caches pulled at runtime
+models/
+ckpts/
+*.gguf
+*.onnx
+*.safetensors
+
+# Node / Electron
+node_modules/
+dist/
+dist-electron/
+release/
+apps/desktop/dist/
+apps/desktop/release/
+
+# macOS / editors
+.DS_Store
+.idea/
+.vscode/

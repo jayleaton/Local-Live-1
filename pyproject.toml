@@ -1,0 +1,35 @@
+[project]
+name = "jarvis"
+version = "0.0.1"
+description = "Local-first, MCP-native voice agent harness (Phase 0: text tool loop)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+local = ["mlx-lm>=0.24"]
+voice = [
+  "numpy>=1.26",
+  "sounddevice>=0.4.6",
+  "webrtcvad-wheels>=2.0.14",
+  "faster-whisper>=1.0",
+  "kokoro-onnx>=0.4",
+  "huggingface-hub>=0.24",
+  "sherpa-onnx>=1.10",
+  "websockets>=12",
+]
+
+[project.scripts]
+jarvis = "jarvis.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jarvis"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,109 @@
+{
+  "local": {
+    "provider": "mlx",
+    "model": "mlx-community/Qwen3.5-9B-MLX-4bit",
+    "temperature": 0.5,
+    "max_tokens": 320
+  },
+  "model": {
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-flash",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "temperature": 0.3,
+    "max_tokens": 1024,
+    "timeout": 120,
+    "extra_params": {
+      "thinking": {
+        "type": "disabled"
+      }
+    }
+  },
+  "agents": {
+    "worker": {
+      "description": "High-skill worker agent for coding, repositories, files, research and long multi-step tasks.",
+      "base_url": "https://api.deepseek.com",
+      "model": "deepseek-flash",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "reasoning_effort": "high",
+      "extra_params": {
+        "thinking": {
+          "type": "enabled"
+        }
+      },
+      "max_tokens": 4096,
+      "timeout": 600
+    }
+  },
+  "dispatch": {
+    "enabled": false,
+    "max_tasks": 1
+  },
+  "policy": {
+    "allowed_servers": [
+      "demo",
+      "t3",
+      "zread",
+      "agent",
+      "webtools"
+    ],
+    "deny_patterns": [
+      "*shell*",
+      "*exec*"
+    ],
+    "read_only_only": false,
+    "auto_approve": false
+  },
+  "settings": {
+    "max_steps": 6,
+    "history_turns": 12
+  },
+  "voice": {
+    "stt_model": "base.en",
+    "tts_voice": "af_heart",
+    "speech_speed": 1.0,
+    "barge_in": true,
+    "end_silence_ms": 700,
+    "vad_aggressiveness": 2,
+    "streaming": true,
+    "streaming_backend": "nemotron",
+    "nemo_url": "ws://127.0.0.1:8081",
+    "nemo_model": "nemotron-3.5",
+    "endpointing_ms": 600,
+    "greeting": "Hi, I'm Jarvis.",
+    "tts_backend": "chatterbox"
+  },
+  "servers": {
+    "demo": {
+      "command": [
+        "python3",
+        "servers/demo_mcp_server.py"
+      ],
+      "allow": [
+        "now",
+        "add",
+        "divide"
+      ]
+    },
+    "t3": {
+      "url": "http://127.0.0.1:3773/mcp/workspace",
+      "allow": [
+        "list_projects",
+        "list_threads",
+        "get_thread",
+        "start_thread",
+        "follow_up",
+        "interrupt_thread"
+      ]
+    },
+    "zread": {
+      "url": "https://api.z.ai/api/mcp/zread/mcp",
+      "headers": {
+        "Authorization": "Bearer ${Z_AI_API_KEY}"
+      },
+      "allow": [
+        "search_doc",
+        "read_file"
+      ]
+    }
+  }
+}
