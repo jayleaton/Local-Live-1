@@ -1,5 +1,9 @@
-// Minimal preload. The UI is the same page the browser gets, so we expose only a
-// capability flag; the Electron shell owns no app logic.
-const { contextBridge } = require("electron");
+// Minimal preload. The UI is the same page the browser gets. We expose only the
+// small shell capabilities (set/clear backend URL) used by the app's own modal.
+const { contextBridge, ipcRenderer } = require("electron");
 
-contextBridge.exposeInMainWorld("jarvisShell", { desktop: true });
+contextBridge.exposeInMainWorld("jarvisShell", {
+  desktop: true,
+  setUrl: (url) => ipcRenderer.send("jarvis-set-url", String(url || "")),
+  close: () => ipcRenderer.send("jarvis-close-modal"),
+});
