@@ -1,0 +1,2 @@
+# A standalone Python runtime (with backend deps) is staged here by CI, and bundled
+# into the app as `resources/backend/python` so the packaged app needs no runtime setup.

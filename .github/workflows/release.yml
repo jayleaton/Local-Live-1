@@ -26,7 +26,34 @@ jobs:
         with:
           node-version: 20
 
-      # Bundle `uv` so the packaged app can create its own backend environment.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Bundle a standalone Python + backend deps so the app runs with no setup.
+      # (macOS also gets MLX for the on-device brain; Windows/Linux use API or a
+      # local OpenAI-compatible server.)
+      - name: Bundle backend runtime
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            python -m pip install ".[voice,local]"
+          else
+            python -m pip install ".[voice]"
+          fi
+          python - <<'PY'
+          import shutil, sysconfig, pathlib
+          prefix = pathlib.Path(sysconfig.get_paths()["stdlib"]).parent
+          dst = pathlib.Path("apps/desktop/python")
+          if dst.exists():
+              shutil.rmtree(dst)
+          shutil.copytree(prefix, dst, symlinks=False)
+          print("bundled python:", prefix, "->", dst)
+          PY
+          du -sh apps/desktop/python || true
+
+      # Also bundle `uv` as a fallback runtime.
       - name: Stage bundled uv
         shell: bash
         run: |
@@ -36,7 +63,6 @@ jobs:
           else
             cp "$(command -v uv)" apps/desktop/bin/uv
           fi
-          ls -l apps/desktop/bin
 
       - name: Install desktop deps
         working-directory: apps/desktop
