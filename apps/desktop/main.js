@@ -7,7 +7,7 @@
 //
 // Point it somewhere with JARVIS_URL, e.g. the Tailscale HTTPS URL, or leave the
 // default for a locally running `jarvis serve`.
-const { app, BrowserWindow, Tray, Menu, shell, nativeImage } = require("electron");
+const { app, BrowserWindow, Tray, Menu, shell, nativeImage, systemPreferences } = require("electron");
 const path = require("path");
 
 const JARVIS_URL = process.env.JARVIS_URL || "http://127.0.0.1:8766";
@@ -87,7 +87,16 @@ function createTray() {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Ask macOS for microphone access up front so getUserMedia in the UI doesn't
+  // silently fail. Denied access is surfaced by the page itself.
+  if (process.platform === "darwin") {
+    try {
+      await systemPreferences.askForMediaAccess("microphone");
+    } catch {
+      // Older Electron / unsupported platform: ignore.
+    }
+  }
   createWindow();
   createTray();
   app.on("activate", showWindow);

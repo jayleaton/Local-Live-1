@@ -28,10 +28,14 @@ INDEX_HTML = r"""<!doctype html>
         color:var(--accent); display:flex; align-items:center; justify-content:center; cursor:pointer;
         transition:background .15s,border-color .15s,color .15s; }
   .mic svg{ width:30px; height:30px; }
-  #app[data-state="listening"] .mic, #app[data-state="thinking"] .mic, #app[data-state="speaking"] .mic{
+  #app[data-state="listening"] .mic, #app[data-state="connecting"] .mic, #app[data-state="thinking"] .mic, #app[data-state="speaking"] .mic{
         background:var(--accent); border-color:var(--accent); color:#fff; }
   .status{ display:none; font-size:15px; color:var(--fg); }
   #app[data-view="menu"] .status{ display:block; }
+  .caption{ display:none; font-size:12px; color:var(--muted); margin-top:-2px; }
+  #app:not([data-state="idle"]) .caption{ display:block; }
+  #app[data-state="thinking"] .mic svg{ animation:breathe 1.2s ease-in-out infinite; }
+  @keyframes breathe{ 50%{ opacity:.35; } }
 
   .pop{ position:absolute; bottom:96px; left:50%; transform:translateX(-50%);
         background:var(--card); border:1px solid var(--line); border-radius:16px; padding:14px;
@@ -111,6 +115,7 @@ INDEX_HTML = r"""<!doctype html>
   <button class="mic" id="mic" aria-label="Talk">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4"/></svg>
   </button>
+  <span class="caption" id="caption"></span>
 </div>
 
 <script>
@@ -129,9 +134,10 @@ let botBubble=null,botText="",userCommitted=false;
 let spoke=false,silenceMs=0,awaitingFinal=false;
 let audioQueue=[],playing=false,currentAudio=null;
 
-function state(s){ app.dataset.state=s; statusEl.textContent=LABELS[s]||s; }
+function state(s){ app.dataset.state=s; statusEl.textContent=LABELS[s]||s; const c=document.getElementById('caption'); if(c) c.textContent=LABELS[s]||s; }
 function view(v){ app.dataset.view=v; pop.hidden=(v==='none'); if(v==='input') quicktext.focus(); }
 function el(c){const d=document.createElement('div');d.className='msg '+c;return d;}
+function notice(t){ if(app.dataset.view==='none') view('chat'); const d=el('bot'); d.textContent=t; log.appendChild(d); log.scrollTop=log.scrollHeight; }
 function addUser(t){const d=el('user');d.textContent=t;log.appendChild(d);log.scrollTop=log.scrollHeight;return d;}
 function ensureBot(){ if(botBubble) return botBubble; botBubble=el('bot'); const m=document.createElement('div');m.className='meta';m.style.display='none';botBubble._meta=m;botBubble.appendChild(m); const s=document.createElement('span');botBubble._s=s;botBubble.appendChild(s); botBubble.classList.add('caret'); log.appendChild(botBubble); log.scrollTop=log.scrollHeight; return botBubble; }
 function appendBot(t){ const b=ensureBot(); botText+=t; b._s.textContent=botText; log.scrollTop=log.scrollHeight; }
@@ -168,12 +174,13 @@ function startPCM(){ audioCtx=new (window.AudioContext||window.webkitAudioContex
     if(rms>0.012){ spoke=true; silenceMs=0; awaitingFinal=false; } else if(spoke){ silenceMs+=128; if(silenceMs>450&&!awaitingFinal){ awaitingFinal=true; spoke=false; onFinalize(); } }
     ws.send(pcm.buffer); };
   micSrc.connect(procNode); procNode.connect(muteGain); muteGain.connect(audioCtx.destination); }
-async function startMic(){ if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){ alert('Microphone needs HTTPS. Open '+location.href.replace(/^http:/,'https:')+'.'); return; }
+async function startMic(){ if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){ notice('Microphone needs a secure context (HTTPS). Open '+location.href.replace(/^http:/,'https:')+'.'); return; }
+  state('connecting');
   try{ micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}}); }
-  catch(e){ alert('Microphone unavailable: '+e.message); return; }
-  streaming=true; if(app.dataset.view==='none') view('menu'); state('connecting');
-  try{ ws=new WebSocket(WS_URL); ws.binaryType='arraybuffer'; ws.onopen=()=>{ state('listening'); startPCM(); }; ws.onmessage=onWs; ws.onerror=()=>{}; }
-  catch(e){ alert('Streaming unavailable: '+e.message); } }
+  catch(e){ notice('Microphone unavailable: '+e.message); state('idle'); return; }
+  streaming=true; if(app.dataset.view==='none') view('menu');
+  try{ ws=new WebSocket(WS_URL); ws.binaryType='arraybuffer'; ws.onopen=()=>{ state('listening'); startPCM(); }; ws.onmessage=onWs; ws.onerror=()=>{ notice('Voice connection failed — is the streaming service running?'); stopMic(); }; }
+  catch(e){ notice('Streaming unavailable: '+e.message); stopMic(); } }
 function stopMic(){ streaming=false; if(ws){ try{ws.send(JSON.stringify({type:'reset'}));ws.close();}catch(e){} ws=null; }
   if(procNode){procNode.disconnect();procNode.onaudioprocess=null;procNode=null;} if(micSrc){micSrc.disconnect();micSrc=null;}
   if(muteGain){muteGain.disconnect();muteGain=null;} if(audioCtx){audioCtx.close();audioCtx=null;} if(micStream){micStream.getTracks().forEach(t=>t.stop());micStream=null;}

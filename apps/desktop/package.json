@@ -16,7 +16,12 @@
     "appId": "ai.jarvis.desktop",
     "productName": "Local-Live-1",
     "files": ["main.js", "preload.js"],
-    "mac": { "category": "public.app-category.productivity" },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Local-Live-1 uses the microphone for voice input."
+      }
+    },
     "linux": { "target": "AppImage" },
     "win": { "target": "nsis" }
   }

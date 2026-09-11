@@ -197,6 +197,28 @@ class JarvisService:
 
         return MLXProvider(self.cfg.local.model, temperature=self.cfg.local.temperature, max_tokens=self.cfg.local.max_tokens)
 
+    def warmup(self) -> None:
+        """Load models now and keep them resident so the first turn isn't slow."""
+        import time
+
+        t0 = time.time()
+        notes: list[str] = []
+        try:
+            provider = self.harness.provider
+            if hasattr(provider, "_load"):
+                provider._load()
+                notes.append("brain")
+        except Exception as e:  # noqa: BLE001
+            notes.append(f"brain:err({type(e).__name__})")
+        for label, obj in (("stt", self.stt), ("tts", self.tts)):
+            try:
+                if hasattr(obj, "_load"):
+                    obj._load()
+                    notes.append(label)
+            except Exception as e:  # noqa: BLE001
+                notes.append(f"{label}:err({type(e).__name__})")
+        print(f"  warmup: loaded {', '.join(notes) or 'nothing'} in {time.time() - t0:.1f}s")
+
     def get_settings(self) -> dict:
         return {
             "response_mode": self.cfg.response_mode,
@@ -674,6 +696,7 @@ def run_server(
             print(f"  streaming unavailable ({type(e).__name__}: {e}); using VAD+Whisper")
     if https:
         print("  (self-signed cert: accept the browser warning once — the mic needs a secure context)")
+    service.warmup()
     print("  Ctrl-C to stop.")
     if open_browser:
         threading.Timer(1.0, lambda: webbrowser.open(f"{scheme}://127.0.0.1:{chosen}")).start()
