@@ -85,8 +85,8 @@ INDEX_HTML = r"""<!doctype html>
 </style>
 </head>
 <body>
-<div id="app" data-view="none" data-state="idle">
-  <div class="pop" id="pop" hidden>
+<div id="app" data-view="chat" data-state="idle">
+  <div class="pop" id="pop">
     <nav class="view view-menu">
       <span class="status" id="status">Ready</span>
       <button class="row" data-nav="chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M21 12a8 8 0 0 1-11.5 7.2L3 21l1.8-6.5A8 8 0 1 1 21 12z"/></svg><span>Chat</span></button>
@@ -181,7 +181,7 @@ async function startMic(){ if(!navigator.mediaDevices||!navigator.mediaDevices.g
   state('connecting');
   try{ micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}}); }
   catch(e){ notice('Microphone unavailable: '+e.message); state('idle'); return; }
-  streaming=true; if(app.dataset.view==='none') view('menu');
+  streaming=true; if(app.dataset.view==='none') view('chat');
   try{ ws=new WebSocket(WS_URL); ws.binaryType='arraybuffer'; ws.onopen=()=>{ state('listening'); startPCM(); }; ws.onmessage=onWs; ws.onerror=()=>{ notice('Voice connection failed — is the streaming service running?'); stopMic(); }; }
   catch(e){ notice('Streaming unavailable: '+e.message); stopMic(); } }
 function stopMic(){ streaming=false; if(ws){ try{ws.send(JSON.stringify({type:'reset'}));ws.close();}catch(e){} ws=null; }
@@ -194,8 +194,8 @@ document.querySelectorAll('[data-nav]').forEach(b=>b.onclick=()=>{ view(b.datase
 document.getElementById('btn-full').onclick=()=>{ app.dataset.full = app.dataset.full==='true'?'false':'true'; };
 composer.onsubmit=e=>{ e.preventDefault(); const t=input.value; input.value=''; sendText(t); };
 quickform.onsubmit=e=>{ e.preventDefault(); const t=quicktext.value; quicktext.value=''; sendText(t); };
-document.addEventListener('keydown',e=>{ if(e.key==='Escape') view('none'); });
-document.addEventListener('click',e=>{ if(app.dataset.view!=='none' && !app.contains(e.target)) view('none'); });
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ app.dataset.view==='chat' ? view('menu') : view('none'); } });
+document.addEventListener('click',e=>{ const v=app.dataset.view; if((v==='menu'||v==='input'||v==='settings') && !app.contains(e.target)) view('none'); });
 
 async function loadSettings(){ const d=await (await fetch('/settings')).json();
   document.getElementById('s-mode').value=d.response_mode;
