@@ -1,9 +1,10 @@
-# Jarvis
+# Local-Live-1
 
-A **local-first voice agent**. It runs on your own machine: speech in, speech out,
-an on-device LLM, and a tool harness that can call MCP servers (local tools, your
-T3 workspace, the web). Heavy tasks can be handed to a remote *worker* agent, but
-voice and the default brain stay on-device.
+**Local-Live-1** is a **local-first voice agent** (the assistant is named **Jarvis**).
+It runs on your own machine: speech in, speech out, an on-device LLM, and a tool
+harness that can call MCP servers (local tools, your T3 workspace, the web). Heavy
+tasks can be handed to a remote *worker* agent, but voice and the default brain stay
+on-device.
 
 The same simple UI is served to the browser and wrapped as an Electron desktop app.
 

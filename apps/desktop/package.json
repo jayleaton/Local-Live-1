@@ -2,7 +2,7 @@
   "name": "@jarvis/desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Electron shell for the local Jarvis voice agent UI",
+  "description": "Local-Live-1 desktop shell (Electron) for the local Jarvis voice agent UI",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -14,7 +14,7 @@
   },
   "build": {
     "appId": "ai.jarvis.desktop",
-    "productName": "Jarvis",
+    "productName": "Local-Live-1",
     "files": ["main.js", "preload.js"],
     "mac": { "category": "public.app-category.productivity" },
     "linux": { "target": "AppImage" },

@@ -72,10 +72,10 @@ function createTray() {
   const icon = nativeImage.createEmpty();
   try {
     tray = new Tray(icon);
-    tray.setToolTip("Jarvis");
+    tray.setToolTip("Local-Live-1");
     tray.setContextMenu(
       Menu.buildFromTemplate([
-        { label: "Show Jarvis", click: showWindow },
+        { label: "Show Local-Live-1", click: showWindow },
         { label: "Reload", click: () => win && win.reload() },
         { type: "separator" },
         { label: "Quit", click: () => { quitting = true; app.quit(); } },
