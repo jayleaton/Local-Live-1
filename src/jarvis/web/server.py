@@ -335,6 +335,9 @@ class JarvisService:
             "voices": ["af_heart", "af_bella", "af_nicole", "af_sarah", "am_michael", "am_adam", "bm_george", "bf_emma"],
             "max_spoken_sentences": self.cfg.voice.max_spoken_sentences,
             "endpointing_ms": self.cfg.voice.endpointing_ms,
+            "speech_speed": self.cfg.voice.speech_speed,
+            "barge_in": self.cfg.voice.barge_in,
+            "has_api_key": bool(self.cfg.model.api_key or os.environ.get(self.cfg.model.api_key_env or "", "")),
             "asr_backend": self.cfg.voice.streaming_backend,
             "asr_backends": self._asr_backends(),
             "local_available": self._local_available(),
@@ -537,6 +540,10 @@ class JarvisService:
             self.cfg.local.model = data["local_model"]
         if data.get("api_model"):
             self.cfg.model.model = data["api_model"]
+        if data.get("api_base_url"):
+            self.cfg.model.base_url = str(data["api_base_url"]).rstrip("/")
+        if data.get("api_key"):
+            self.cfg.model.api_key = str(data["api_key"])
         if data.get("tts_backend") in ("chatterbox", "kokoro") and data["tts_backend"] != getattr(self.cfg.voice, "tts_backend", None):
             self.cfg.voice.tts_backend = data["tts_backend"]
             self.tts = self._build_tts()
@@ -548,6 +555,12 @@ class JarvisService:
             self.cfg.voice.max_spoken_sentences = max(1, int(data["max_spoken_sentences"]))
         if data.get("endpointing_ms") is not None:
             self.cfg.voice.endpointing_ms = max(100, int(data["endpointing_ms"]))
+        if data.get("speech_speed") is not None:
+            self.cfg.voice.speech_speed = min(2.0, max(0.5, float(data["speech_speed"])))
+            if hasattr(self.tts, "speed"):
+                self.tts.speed = self.cfg.voice.speech_speed
+        if data.get("barge_in") is not None:
+            self.cfg.voice.barge_in = bool(data["barge_in"])
         # Swap the response provider live, and warm a local brain in the background.
         try:
             self.harness.provider = self._make_provider()
@@ -579,12 +592,17 @@ class JarvisService:
         data["response_mode"] = self.cfg.response_mode
         data.setdefault("local", {})["model"] = self.cfg.local.model if self.cfg.local else ""
         data.setdefault("model", {})["model"] = self.cfg.model.model
+        data["model"]["base_url"] = self.cfg.model.base_url
+        if self.cfg.model.api_key:
+            data["model"]["api_key"] = self.cfg.model.api_key
         data.setdefault("voice", {})["tts_voice"] = self.cfg.voice.tts_voice
         data["voice"]["tts_backend"] = getattr(self.cfg.voice, "tts_backend", "kokoro")
         data["voice"]["streaming_backend"] = self.cfg.voice.streaming_backend
         data["voice"]["nemo_model"] = self.cfg.voice.nemo_model
         data["voice"]["max_spoken_sentences"] = self.cfg.voice.max_spoken_sentences
         data["voice"]["endpointing_ms"] = self.cfg.voice.endpointing_ms
+        data["voice"]["speech_speed"] = self.cfg.voice.speech_speed
+        data["voice"]["barge_in"] = self.cfg.voice.barge_in
         try:
             path.write_text(json.dumps(data, indent=2))
         except Exception:
