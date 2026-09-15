@@ -448,12 +448,14 @@ class AgentHarness:
         )
 
     def _remember(self, messages: list[Message]) -> None:
-        # Keep only user turns and assistant turns with spoken text. Tool-call-only
-        # assistant messages are dropped so history stays valid for the next turn.
+        # Keep only user turns and pure assistant text. Any assistant message that
+        # carries tool_calls is dropped — even if it also has text — because its
+        # matching tool result is not retained, and leaving it in history makes the
+        # next request invalid ("assistant tool_calls must be followed by tool messages").
         convo = [
             m
             for m in messages
-            if m.role == "user" or (m.role == "assistant" and (m.content or "").strip())
+            if m.role == "user" or (m.role == "assistant" and not m.tool_calls and (m.content or "").strip())
         ]
         keep = self.config.history_turns * 2
         self.history = convo[-keep:]
