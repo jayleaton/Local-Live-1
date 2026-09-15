@@ -82,6 +82,11 @@ INDEX_HTML = r"""<!doctype html>
         border-radius:8px; padding:7px 9px; }
   .btnrow{ display:flex; gap:8px; }
   .btnrow button{ flex:1; border:1px solid var(--line); background:transparent; color:var(--fg); border-radius:9px; padding:8px; cursor:pointer; }
+  .hkrow{ display:flex; align-items:center; gap:8px; }
+  .hkrow .lbl{ flex:1; font-size:12px; color:var(--muted); }
+  .hkbtn{ border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:8px; padding:6px 10px; font-size:12px; cursor:pointer; }
+  .hkbtn.capturing{ border-color:var(--accent); color:var(--accent); }
+  kbd{ font:12px ui-monospace,SFMono-Regular,Menlo,monospace; border:1px solid var(--line); border-radius:6px; padding:2px 6px; min-width:64px; text-align:center; }
   .tabs{ display:flex; gap:2px; border-bottom:1px solid var(--line); margin:0 0 8px; }
   .tabs .tab{ flex:1; border:0; background:transparent; color:var(--muted); cursor:pointer; font-size:13px;
         padding:8px 4px; border-bottom:2px solid transparent; margin-bottom:-1px; }
@@ -120,6 +125,7 @@ INDEX_HTML = r"""<!doctype html>
         <button class="tab" type="button" data-tab="brain" aria-selected="true">Brain</button>
         <button class="tab" type="button" data-tab="speech" aria-selected="false">Speech</button>
         <button class="tab" type="button" data-tab="voice" aria-selected="false">Voice</button>
+        <button class="tab" type="button" data-tab="keys" aria-selected="false">Keys</button>
       </div>
       <div class="tabbody">
         <div class="tabpane active" data-pane="brain">
@@ -134,6 +140,11 @@ INDEX_HTML = r"""<!doctype html>
               <div class="pbar" id="brain-bar"><div class="pbar-fill" id="brain-bar-fill"></div></div>
               <div id="brain-progress" style="font-size:11px;color:var(--muted);margin-top:6px"></div>
             </div>
+          </div>
+          <div id="s-api-row" style="display:none">
+            <label>API base URL <input id="s-api-base" placeholder="https://api.deepseek.com" /></label>
+            <label>API model <input id="s-api-model" placeholder="deepseek-flash" /></label>
+            <label>API key <input id="s-api-key" type="password" placeholder="not set" /></label>
           </div>
         </div>
         <div class="tabpane" data-pane="speech">
@@ -154,6 +165,14 @@ INDEX_HTML = r"""<!doctype html>
           <label>TTS engine <select id="s-tts-backend"><option value="chatterbox">Chatterbox (natural)</option><option value="kokoro">Kokoro (fast)</option></select></label>
           <label>Voice <select id="s-voice"></select></label>
           <label>Max spoken sentences <input id="s-cap" type="number" min="1" max="10" /></label>
+          <label>Speech speed <input id="s-speed" type="number" min="0.5" max="2" step="0.05" /></label>
+          <label>Endpoint silence (ms) <input id="s-endpoint" type="number" min="100" max="3000" step="50" /></label>
+        </div>
+        <div class="tabpane" data-pane="keys">
+          <label style="flex-direction:row;align-items:center;gap:8px"><input id="s-hotkeys-on" type="checkbox" style="width:auto" /> Enable hotkeys</label>
+          <div class="hkrow"><span class="lbl">Toggle listening</span><kbd id="kbd-toggle">Ctrl+Space</kbd><button class="hkbtn" id="hkassign-toggle" type="button">Assign</button><button class="hkbtn" id="hkclear-toggle" type="button">Clear</button></div>
+          <div class="hkrow"><span class="lbl">Push to talk (hold)</span><kbd id="kbd-ptt">F8</kbd><button class="hkbtn" id="hkassign-ptt" type="button">Assign</button><button class="hkbtn" id="hkclear-ptt" type="button">Clear</button></div>
+          <div id="hotkey-info" style="font-size:11px;color:var(--muted)"></div>
         </div>
       </div>
       <div class="btnrow"><button id="s-save">Save</button><button id="s-preview">Preview</button></div>
@@ -186,6 +205,35 @@ let audioQueue=[],playing=false,currentAudio=null;
 let endpointMs=1200;
 let asrCatalog=null, asrPoll=null, brainCatalog=null, localAvailable=false;
 let micDeviceId=''; try{ micDeviceId=localStorage.getItem('jarvis.micDeviceId')||''; }catch(e){}
+
+// Hotkeys (in-app). The desktop app additionally registers a global toggle.
+let hotkeysEnabled=true, hkToggle='Ctrl+Space', hkPTT='F8';
+try{
+  hotkeysEnabled=localStorage.getItem('jarvis.hotkeysEnabled')!=='0';
+  hkToggle=localStorage.getItem('jarvis.hotkeyToggle')||'Ctrl+Space';
+  hkPTT=localStorage.getItem('jarvis.hotkeyPTT')||'F8';
+}catch(e){}
+try{ const _q=new URLSearchParams(location.search); if(_q.get('hk_toggle')) hkToggle=_q.get('hk_toggle'); if(_q.get('hk_ptt')) hkPTT=_q.get('hk_ptt'); persistHotkeys(); }catch(e){}
+let capturingFor=null;
+function evCombo(e){ const p=[]; if(e.ctrlKey||e.metaKey)p.push('Ctrl'); if(e.altKey)p.push('Alt'); if(e.shiftKey)p.push('Shift'); const k=e.key; if(!['Control','Alt','Shift','Meta'].includes(k)) p.push(k===' '?'Space':(k.length===1?k.toUpperCase():k)); return p.join('+'); }
+function comboHasMainKey(c){ const mods=['Ctrl','Alt','Shift']; return c.split('+').some(p=>p && !mods.includes(p)); }
+function inEditable(e){ const t=e.target; return t && (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable); }
+function persistHotkeys(){ try{ localStorage.setItem('jarvis.hotkeysEnabled', hotkeysEnabled?'1':'0'); localStorage.setItem('jarvis.hotkeyToggle', hkToggle); localStorage.setItem('jarvis.hotkeyPTT', hkPTT); }catch(e){} }
+function renderHotkeys(){
+  const t=document.getElementById('kbd-toggle'), p=document.getElementById('kbd-ptt');
+  if(t) t.textContent = hkToggle || 'Not set';
+  if(p) p.textContent = hkPTT || 'Not set';
+  const a=document.getElementById('hkassign-toggle'), b=document.getElementById('hkassign-ptt');
+  if(a) a.classList.toggle('capturing', capturingFor==='toggle');
+  if(b) b.classList.toggle('capturing', capturingFor==='ptt');
+  if(a) a.textContent = capturingFor==='toggle' ? 'Press combination…' : 'Assign';
+  if(b) b.textContent = capturingFor==='ptt' ? 'Press combination…' : 'Assign';
+  updateHotkeyInfo();
+}
+function startCapture(which){ capturingFor=which; renderHotkeys(); }
+function endCapture(){ capturingFor=null; renderHotkeys(); }
+function updateHotkeyInfo(){ const el=document.getElementById('hotkey-info'); if(el) el.textContent=`Hold ${hkPTT} to talk · ${hkToggle} toggles (in-app). The desktop app also registers a global toggle shortcut.`; }
+window.jarvisPushToTalk=function(on){ if(on){ if(!streaming) startMic(); } else { if(streaming) stopMic(); } };
 
 function state(s){ app.dataset.state=s; statusEl.textContent=LABELS[s]||s; const c=document.getElementById('caption'); if(c) c.textContent=LABELS[s]||s; }
 function view(v){ app.dataset.view=v; pop.hidden=(v==='none'); if(v!=='chat') app.dataset.full='false'; if(v==='input') quicktext.focus(); }
@@ -253,6 +301,27 @@ quickform.onsubmit=e=>{ e.preventDefault(); const t=quicktext.value; quicktext.v
 document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ if(streaming){ stopMic(); } else { app.dataset.view==='chat' ? view('menu') : view('none'); } } });
 document.addEventListener('click',e=>{ const v=app.dataset.view; if((v==='menu'||v==='input'||v==='settings') && !app.contains(e.target)) view('none'); });
 
+// In-app hotkeys: push-to-talk (hold) and toggle. Also captures new assignments.
+document.addEventListener('keydown',e=>{
+  if(capturingFor){ e.preventDefault(); e.stopPropagation();
+    if(e.key==='Escape'){ endCapture(); return; }
+    if(e.key==='Backspace'||e.key==='Delete'){ if(capturingFor==='toggle') hkToggle=''; else hkPTT=''; persistHotkeys(); endCapture(); return; }
+    const c=evCombo(e);
+    if(!comboHasMainKey(c)) return;            // wait for the non-modifier key
+    if(capturingFor==='toggle') hkToggle=c; else hkPTT=c;
+    persistHotkeys(); endCapture(); return;
+  }
+  if(!hotkeysEnabled||inEditable(e)) return; const c=evCombo(e); if(!c||e.repeat) return;
+  if(hkPTT && c===hkPTT){ e.preventDefault(); window.jarvisPushToTalk(true); }
+  else if(hkToggle && c===hkToggle){ e.preventDefault(); window.jarvisToggleMic(); }
+});
+document.addEventListener('keyup',e=>{ if(capturingFor||!hotkeysEnabled||inEditable(e)) return; if(hkPTT && evCombo(e)===hkPTT){ e.preventDefault(); window.jarvisPushToTalk(false); } });
+// Assign / clear buttons.
+document.getElementById('hkassign-toggle').onclick=()=>startCapture('toggle');
+document.getElementById('hkassign-ptt').onclick=()=>startCapture('ptt');
+document.getElementById('hkclear-toggle').onclick=()=>{ hkToggle=''; persistHotkeys(); renderHotkeys(); };
+document.getElementById('hkclear-ptt').onclick=()=>{ hkPTT=''; persistHotkeys(); renderHotkeys(); };
+
 let settingsTab='brain';
 function showTab(name){ settingsTab=name||settingsTab; document.querySelectorAll('#settings-tabs .tab').forEach(b=>b.setAttribute('aria-selected', b.dataset.tab===settingsTab?'true':'false')); document.querySelectorAll('.tabpane').forEach(p=>p.classList.toggle('active', p.dataset.pane===settingsTab)); if(settingsTab==='voice') loadMics(); if(settingsTab==='brain') loadBrain(); }
 async function loadMics(){ const sel=document.getElementById('s-mic'); if(!sel) return;
@@ -276,9 +345,21 @@ async function loadSettings(){ const d=await (await fetch('/settings')).json();
   document.getElementById('s-local-row').style.display=(d.response_mode==='local'&&localAvailable)?'block':'none';
   const v=document.getElementById('s-voice'); v.innerHTML=''; (d.voices||[]).forEach(x=>{const o=document.createElement('option');o.value=x;o.textContent=x;if(x===d.tts_voice)o.selected=true;v.appendChild(o);});
   document.getElementById('s-tts-backend').value=d.tts_backend||'kokoro'; v.disabled=(d.tts_backend==='chatterbox');
-  document.getElementById('s-cap').value=d.max_spoken_sentences; loadAsr(); loadBrain(); }
+  document.getElementById('s-cap').value=d.max_spoken_sentences;
+  document.getElementById('s-speed').value=(d.speech_speed!=null?d.speech_speed:1);
+  document.getElementById('s-endpoint').value=(d.endpointing_ms!=null?d.endpointing_ms:1200);
+  document.getElementById('s-api-base').value=d.api_base_url||'';
+  document.getElementById('s-api-model').value=d.api_model||'';
+  const keyEl=document.getElementById('s-api-key'); keyEl.value=''; keyEl.placeholder=d.has_api_key?'•••••••• (saved)':'not set';
+  document.getElementById('s-api-row').style.display=(document.getElementById('s-mode').value==='api')?'block':'none';
+  document.getElementById('s-hotkeys-on').checked=hotkeysEnabled;
+  renderHotkeys();
+  loadAsr(); loadBrain(); }
 async function saveSettings(){ const sel=document.getElementById('s-asr').value, nemo=sel.indexOf('nemo:')===0?sel.slice(5):'';
-  const body={ response_mode:document.getElementById('s-mode').value, local_model:document.getElementById('s-local').value, asr_backend:nemo?'nemotron':'sherpa', nemo_model:nemo, tts_backend:document.getElementById('s-tts-backend').value, tts_voice:document.getElementById('s-voice').value, max_spoken_sentences:parseInt(document.getElementById('s-cap').value||'3',10) };
+  const body={ response_mode:document.getElementById('s-mode').value, local_model:document.getElementById('s-local').value, asr_backend:nemo?'nemotron':'sherpa', nemo_model:nemo, tts_backend:document.getElementById('s-tts-backend').value, tts_voice:document.getElementById('s-voice').value, max_spoken_sentences:parseInt(document.getElementById('s-cap').value||'3',10), speech_speed:parseFloat(document.getElementById('s-speed').value||'1'), endpointing_ms:parseInt(document.getElementById('s-endpoint').value||'1200',10), api_base_url:document.getElementById('s-api-base').value.trim(), api_model:document.getElementById('s-api-model').value.trim() };
+  const key=document.getElementById('s-api-key').value.trim(); if(key) body.api_key=key;
+  hotkeysEnabled=document.getElementById('s-hotkeys-on').checked;
+  persistHotkeys(); renderHotkeys();
   try{ await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); }catch(e){} }
 async function loadAsr(){ try{ asrCatalog=await (await fetch('/asr/models')).json(); }catch(e){ return; }
   const d=asrCatalog, sel=document.getElementById('s-asr'), info=document.getElementById('asr-info');
@@ -373,7 +454,7 @@ document.getElementById('s-local').onchange=()=>{ updateBrainActions(); saveSett
   const d=brainCatalog||{}, m=(d.models||[]).find(x=>x.repo===document.getElementById('s-local').value);
   if(m&&!m.downloaded&&!asrBusy) runBrainJob({repo:m.repo,file:m.file,size:m.size,label:m.label}); };
 document.getElementById('s-brain-download').onclick=()=>{ const d=brainCatalog||{}, m=(d.models||[]).find(x=>x.repo===document.getElementById('s-local').value)||{}; runBrainJob({repo:m.repo,file:m.file,size:m.size,label:m.label}); };
-document.getElementById('s-mode').onchange=()=>{ document.getElementById('s-local-row').style.display=(document.getElementById('s-mode').value==='local'&&localAvailable)?'block':'none'; };
+document.getElementById('s-mode').onchange=()=>{ document.getElementById('s-local-row').style.display=(document.getElementById('s-mode').value==='local'&&localAvailable)?'block':'none'; document.getElementById('s-api-row').style.display=(document.getElementById('s-mode').value==='api')?'block':'none'; };
 document.getElementById('s-tts-backend').onchange=()=>{ document.getElementById('s-voice').disabled=document.getElementById('s-tts-backend').value==='chatterbox'; };
 document.getElementById('s-save').onclick=saveSettings;
 document.getElementById('s-preview').onclick=async()=>{ await saveSettings(); try{ const r=await (await fetch('/speak',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'Hi, this is how I sound.'})})).json(); enqueueAudio(r.audio); }catch(e){} };

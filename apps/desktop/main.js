@@ -49,6 +49,8 @@ function loadConfig() {
     model: saved.model || "",
     // Global accelerator that starts/stops recording. Empty disables it.
     hotkeyToggle: saved.hotkeyToggle !== undefined ? saved.hotkeyToggle : "Control+Alt+Space",
+    // Push-to-talk key handled in-app (works while the window is focused).
+    hotkeyPTT: saved.hotkeyPTT || "F8",
   };
 }
 
@@ -254,7 +256,14 @@ function showError() {
   );
 }
 function loadApp() {
-  win.loadURL(backendUrl).catch(showError);
+  try {
+    const u = new URL(backendUrl);
+    if (cfg.hotkeyToggle) u.searchParams.set("hk_toggle", cfg.hotkeyToggle);
+    if (cfg.hotkeyPTT) u.searchParams.set("hk_ptt", cfg.hotkeyPTT);
+    win.loadURL(u.toString()).catch(showError);
+  } catch {
+    win.loadURL(backendUrl).catch(showError);
+  }
 }
 
 async function bootUI() {
@@ -327,8 +336,18 @@ function openSettings() {
     <input id="model" placeholder="deepseek-flash" style="width:100%;box-sizing:border-box;background:#0f1216;border:1px solid #2a2e35;color:#e8eaed;border-radius:8px;padding:8px;margin:0 0 12px"/>
     <label style="display:block;font-size:11px;color:#9aa0a6">API key (optional; stored locally)</label>
     <input id="key" type="password" style="width:100%;box-sizing:border-box;background:#0f1216;border:1px solid #2a2e35;color:#e8eaed;border-radius:8px;padding:8px;margin:0 0 12px"/>
-    <label style="display:block;font-size:11px;color:#9aa0a6">Toggle-recording hotkey (works anywhere; e.g. Control+Alt+Space, blank to disable)</label>
-    <input id="hotkey" placeholder="Control+Alt+Space" style="width:100%;box-sizing:border-box;background:#0f1216;border:1px solid #2a2e35;color:#e8eaed;border-radius:8px;padding:8px;margin:0 0 14px"/>
+    <label style="display:block;font-size:11px;color:#9aa0a6">Toggle-recording hotkey (global; blank disables)</label>
+    <div style="display:flex;align-items:center;gap:8px;margin:0 0 12px">
+      <kbd id="hk" style="flex:1;text-align:center;padding:6px;border:1px solid #2a2e35;border-radius:6px;font:12px ui-monospace,monospace">Not set</kbd>
+      <button id="hkA" type="button" style="padding:6px 10px;border:1px solid #2a2e35;background:#232830;color:#e8eaed;border-radius:8px">Assign</button>
+      <button id="hkC" type="button" style="padding:6px 10px;border:1px solid #2a2e35;background:transparent;color:#e8eaed;border-radius:8px">Clear</button>
+    </div>
+    <label style="display:block;font-size:11px;color:#9aa0a6">Push-to-talk key (in-app; hold)</label>
+    <div style="display:flex;align-items:center;gap:8px;margin:0 0 14px">
+      <kbd id="ptt" style="flex:1;text-align:center;padding:6px;border:1px solid #2a2e35;border-radius:6px;font:12px ui-monospace,monospace">F8</kbd>
+      <button id="pttA" type="button" style="padding:6px 10px;border:1px solid #2a2e35;background:#232830;color:#e8eaed;border-radius:8px">Assign</button>
+      <button id="pttC" type="button" style="padding:6px 10px;border:1px solid #2a2e35;background:transparent;color:#e8eaed;border-radius:8px">Clear</button>
+    </div>
     <div style="display:flex;gap:8px">
       <button id="s" style="flex:1;padding:9px;border:1px solid #2a2e35;background:#232830;color:#e8eaed;border-radius:8px">Save &amp; restart</button>
       <button id="c" style="flex:1;padding:9px;border:1px solid #2a2e35;background:transparent;color:#e8eaed;border-radius:8px">Cancel</button>
@@ -337,9 +356,27 @@ function openSettings() {
   <script>
     const cur=${cur};
     const g=id=>document.getElementById(id);
+    let hk=cur.hotkeyToggle||'', ptt=cur.hotkeyPTT||'F8', capturing='';
+    const hkEl=g('hk'), pttEl=g('ptt');
+    function render(){ hkEl.textContent=hk||'Not set'; pttEl.textContent=ptt||'Not set'; g('hkA').textContent=(capturing==='hk'?'Press combination…':'Assign'); g('pttA').textContent=(capturing==='ptt'?'Press combination…':'Assign'); }
+    render();
+    g('hkA').onclick=()=>{ capturing='hk'; render(); };
+    g('pttA').onclick=()=>{ capturing='ptt'; render(); };
+    g('hkC').onclick=()=>{ hk=''; render(); };
+    g('pttC').onclick=()=>{ ptt=''; render(); };
+    document.addEventListener('keydown',e=>{ if(!capturing) return; e.preventDefault();
+      if(e.key==='Escape'){ capturing=''; render(); return; }
+      if(e.key==='Backspace'||e.key==='Delete'){ if(capturing==='hk')hk=''; else ptt=''; capturing=''; render(); return; }
+      const mods=[]; if(e.ctrlKey||e.metaKey)mods.push('CommandOrControl'); if(e.altKey)mods.push('Alt'); if(e.shiftKey)mods.push('Shift');
+      if(['Control','Meta','Alt','Shift'].includes(e.key)) return;
+      const map={' ':'Space','ArrowUp':'Up','ArrowDown':'Down','ArrowLeft':'Left','ArrowRight':'Right'};
+      const main=map[e.key]||(e.key.length===1?e.key.toUpperCase():e.key);
+      const acc=mods.concat([main]).join('+');
+      if(capturing==='hk')hk=acc; else ptt=acc; capturing=''; render();
+    });
     g('run').checked=cur.runLocally; g('port').value=cur.port; g('url').value=cur.url||'';
-    g('brain').value=cur.brain; g('baseUrl').value=cur.baseUrl||''; g('model').value=cur.model||''; g('key').value=cur.apiKey||''; g('hotkey').value=cur.hotkeyToggle||'';
-    g('s').onclick=()=>window.jarvisShell.saveSettings({runLocally:g('run').checked,port:parseInt(g('port').value||'8766',10),url:g('url').value.trim(),brain:g('brain').value,baseUrl:g('baseUrl').value.trim(),model:g('model').value.trim(),apiKey:g('key').value,hotkeyToggle:g('hotkey').value.trim()});
+    g('brain').value=cur.brain; g('baseUrl').value=cur.baseUrl||''; g('model').value=cur.model||''; g('key').value=cur.apiKey||'';
+    g('s').onclick=()=>window.jarvisShell.saveSettings({runLocally:g('run').checked,port:parseInt(g('port').value||'8766',10),url:g('url').value.trim(),brain:g('brain').value,baseUrl:g('baseUrl').value.trim(),model:g('model').value.trim(),apiKey:g('key').value,hotkeyToggle:hk,hotkeyPTT:ptt});
     g('c').onclick=()=>window.jarvisShell.close();
   </script></body></html>`;
   modal.loadURL(dataUrl(html));
